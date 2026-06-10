@@ -1,0 +1,279 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════
+// INDICATEURS LIB —  Agent Trader
+// ════════════════════════════════════════════════════════════════════════
+// Version   : 1.0.0
+// Source    : tradingview/pine/indicateurs_lib.pine
+// Purpose   : Exports 7 signal functions matching the indicateurs/ folder.
+//             Each function returns [bool bull, bool bear] + context values.
+//             Publish to TradingView Public Library to enable import.
+//             Alternatively, copy-paste the function bodies into strategies.
+//
+// Signal map:
+//   signal_ai_signal()      → Keltner-based Supertrend crossover
+//   signal_luxalgo()        → Multi-indicator aggregation (SMA/RSI/MACD/ST)
+//   signal_orderblock()     → Twiggs Money Flow zero-cross
+//   signal_sr_zones()       → Pivot-based S/R zone proximity
+//   signal_synapse_trail()  → ATR ratchet trail direction flip + quality
+//   signal_trend_channels() → Linear regression channel macro/micro signals
+//   signal_vwap()           → Session VWAP band retest signals
+// ════════════════════════════════════════════════════════════════════════
+library("IndicateursLib_", overlay = true)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. AI SIGNAL — Keltner-based Supertrend crossover
+//    Source : indicateurs/ai_signal
+//    Logic  : Modified Supertrend using Keltner Channel range instead of ATR.
+//             rangec = upperKeltner - lowerKeltner = 2*(high-low)
+//             bull = close crossover  Supertrend line  (bearish→bullish flip)
+//             bear = close crossunder Supertrend line  (bullish→bearish flip)
+//    Params : sensitivity (0.5-10, default 2.8) — band width multiplier
+//             kel_len (default 10)               — Keltner SMA period
+//    Returns: [bull, bear, st_value, direction]
+//             direction: -1 = uptrend (price above trail), 1 = downtrend
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_ai_signal(float sensitivity = 2.8, int kel_len = 10) =>
+    // Keltner range: 2*(high-low) (upper-lower with SMA center)
+    rng2   = 2.0 * (high - low)
+    raw_ub = close + sensitivity * rng2
+    raw_lb = close - sensitivity * rng2
+    var float lb  = na
+    var float ub  = na
+    var int   dir = 1
+    var float st  = na
+    pLB = nz(lb[1])
+    pUB = nz(ub[1])
+    lb  := raw_lb > pLB or close[1] < pLB ? raw_lb : pLB
+    ub  := raw_ub < pUB or close[1] > pUB ? raw_ub : pUB
+    pST = nz(st[1])
+    if bar_index == 0
+        dir := 1
+        st  := ub
+    else if pST == nz(ub[1])
+        dir := close > ub ? -1 : 1
+    else
+        dir := close < lb ? 1 : -1
+    st  := dir == -1 ? lb : ub
+    bull = ta.crossover(close, st)  and barstate.isconfirmed
+    bear = ta.crossunder(close, st) and barstate.isconfirmed
+    [bull, bear, st, dir]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. LUXALGO SIGNAL FORGE — Multi-indicator aggregation
+//    Source : indicateurs/luxalgo
+//    Logic  : Enables/disables individual indicators (SMA, RSI, MACD, ST).
+//             require_all=true  → AND logic  (all enabled must agree)
+//             require_all=false → OR  logic  (any enabled is enough)
+//             bull = transition from non-bullish to bullish aggregate
+//             bear = transition from non-bearish to bearish aggregate
+//    Params : sma_fast/sma_slow (crossover), use_rsi/use_macd/use_st toggles
+//    Returns: [bull, bear, trade_state]
+//             trade_state: 1=long, -1=short, 0=flat
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_luxalgo(int   sma_fast    = 10,   int   sma_slow  = 20,
+                      bool  use_rsi     = false, int   rsi_len   = 14,
+                      float rsi_l       = 50.0,  float rsi_s     = 50.0,
+                      bool  use_macd    = false, int   macd_fast  = 12,
+                      int   macd_slow   = 26,    int   macd_sig   = 9,
+                      bool  use_st      = false, float st_factor  = 3.0,
+                      int   st_len      = 10,    bool  require_all = true) =>
+    smaBull  = ta.sma(close, sma_fast) > ta.sma(close, sma_slow)
+    smaBear  = ta.sma(close, sma_fast) < ta.sma(close, sma_slow)
+    rsiV     = ta.rsi(close, rsi_len)
+    rsiBull  = not use_rsi  or rsiV >= rsi_l
+    rsiBear  = not use_rsi  or rsiV <= rsi_s
+    [ml, ms, _] = ta.macd(close, macd_fast, macd_slow, macd_sig)
+    macdBull = not use_macd or ml > ms
+    macdBear = not use_macd or ml < ms
+    [stLine, stDir] = ta.supertrend(st_factor, st_len)
+    stBull   = not use_st   or stDir < 0
+    stBear   = not use_st   or stDir > 0
+    cBull = require_all ? (smaBull and rsiBull and macdBull and stBull)
+          :               (smaBull or  rsiBull or  macdBull or  stBull)
+    cBear = require_all ? (smaBear and rsiBear and macdBear and stBear)
+          :               (smaBear or  rsiBear or  macdBear or  stBear)
+    var int state = 0
+    bull  = cBull and not cBull[1] and state != 1  and barstate.isconfirmed
+    bear  = cBear and not cBear[1] and state != -1 and barstate.isconfirmed
+    state := bull ? 1 : bear ? -1 : state
+    [bull, bear, state]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. ORDERBLOCK / TWIGGS MONEY FLOW — TMF zero-cross
+//    Source : indicateurs/orderblock
+//    Logic  : TMF measures volume-weighted buying vs selling pressure.
+//             Uses 2-bar lagged cross to avoid false signals on noisy zero touches.
+//             bull = tmf[2] < 0 AND tmf[1] >= 0  (crosses above zero)
+//             bear = tmf[2] >= 0 AND tmf[1] < 0  (crosses below zero)
+//    Params : tmf_len (default 21) — EMA smoothing period
+//             sig_len (default 9)  — signal line EMA
+//    Returns: [bull, bear, tmf_value, signal_line]
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_orderblock(int tmf_len = 21, int sig_len = 9) =>
+    trHigh  = math.max(high, close[1])
+    trLow   = math.min(low,  close[1])
+    trRange = trHigh - trLow
+    buyVol  = trRange > 0 ? volume * (close - trLow)  / trRange : 0.0
+    sellVol = trRange > 0 ? volume * (trHigh - close) / trRange : 0.0
+    rawFlow = ta.ema(buyVol - sellVol, tmf_len)
+    rawVol  = ta.ema(volume,           tmf_len)
+    tmf     = rawVol > 0 ? rawFlow / rawVol : 0.0
+    emaSig  = ta.ema(tmf, sig_len)
+    bull    = tmf[2] < 0.0 and tmf[1] >= 0.0 and barstate.isconfirmed
+    bear    = tmf[2] >= 0.0 and tmf[1] < 0.0  and barstate.isconfirmed
+    [bull, bear, tmf, emaSig]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. SUPPORT / RESISTANCE ZONES — Pivot proximity signal
+//    Source : indicateurs/support_resistance
+//    Logic  : Detects confirmed Pivot Highs (resistance) and Pivot Lows (support).
+//             Uses [pivot_span] bars right for non-repainting confirmation.
+//             Creates ATR-width zones around each level.
+//             bull = price enters support zone with bullish close (bounce)
+//             bear = price enters resistance zone with bearish close (rejection)
+//    Params : pivot_span (default 5) — left AND right bars for pivot detection
+//             zone_atr_mult (default 0.40) — zone width in ATR units
+//    Returns: [bull, bear, support_level, resistance_level]
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_sr_zones(int pivot_span = 5, float zone_atr_mult = 0.40) =>
+    atrV  = ta.atr(14)
+    zoneW = atrV * zone_atr_mult
+    ph    = ta.pivothigh(high, pivot_span, pivot_span)
+    pl    = ta.pivotlow(low,  pivot_span, pivot_span)
+    var float sup = na
+    var float res = na
+    if not na(pl)
+        sup := pl
+    if not na(ph)
+        res := ph
+    inSup = not na(sup) and low  <= sup + zoneW and high >= sup - zoneW
+    inRes = not na(res) and high >= res - zoneW and low  <= res + zoneW
+    bull  = inSup and not inSup[1] and close > close[1] and barstate.isconfirmed
+    bear  = inRes and not inRes[1] and close < close[1] and barstate.isconfirmed
+    [bull, bear, nz(sup, low), nz(res, high)]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. SYNAPSE TRAIL — ATR ratchet trail, direction flip + quality filter
+//    Source : indicateurs/synapse_trail
+//    Logic  : EMA center ± ATR*mult bands form a ratchet trail:
+//             - In long  mode: trail = max(trail[1], lowerBand)  — only rises
+//             - In short mode: trail = min(trail[1], upperBand)  — only falls
+//             Direction flips when close crosses the trail line.
+//             Quality = composite score (ADX 55% + inverted choppiness 45%).
+//             bull = dir flips -1→1 AND quality >= min_quality
+//             bear = dir flips  1→-1 AND quality >= min_quality
+//    Params : atr_len (13), mult (1.618), trail_len (21), min_quality (0-100)
+//    Returns: [bull, bear, trail_value, direction, quality_score]
+//             direction: 1=long trail below price, -1=short trail above price
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_synapse_trail(int   atr_len     = 13,  float mult        = 1.618,
+                            int   trail_len   = 21,  int   min_quality = 0) =>
+    atrV   = ta.atr(atr_len)
+    center = ta.ema(close, trail_len)
+    ub_raw = center + atrV * mult
+    lb_raw = center - atrV * mult
+    var float trail = na
+    var int   dir   = 1
+    if dir == 1
+        trail := math.max(nz(trail[1], lb_raw), lb_raw)
+        if close < trail
+            dir   := -1
+            trail := ub_raw
+    else
+        trail := math.min(nz(trail[1], ub_raw), ub_raw)
+        if close > trail
+            dir   := 1
+            trail := lb_raw
+    // Quality: ADX (55%) + inverse choppiness (45%)
+    [_, _, adxV]  = ta.dmi(14, 14)
+    adxScore      = math.min(adxV / 50.0 * 100.0, 100.0)
+    hiH           = ta.highest(high, 14)
+    loL           = ta.lowest(low,  14)
+    denom         = hiH - loL
+    chop14        = denom > 0 ? 100.0 * math.log10(ta.atr(1) * 14.0 / denom) / math.log10(14.0) : 50.0
+    chopScore     = math.max(0.0, math.min(100.0 - chop14, 100.0))
+    quality       = int(math.round(adxScore * 0.55 + chopScore * 0.45))
+    bull          = dir == 1  and dir[1] == -1 and quality >= min_quality and barstate.isconfirmed
+    bear          = dir == -1 and dir[1] == 1  and quality >= min_quality and barstate.isconfirmed
+    [bull, bear, trail, dir, quality]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. TREND CHANNELS — Linear regression channel, macro + micro signals
+//    Source : indicateurs/trend_channels
+//    Logic  : Macro direction = LR slope over macro_len bars.
+//             Micro channel  = LR basis ± stdev*dev_mult over lr_len bars.
+//             bull signals:
+//               pullback_l = macro up + price bounces off lower LR band
+//               cont_l     = macro up + price crosses above LR basis
+//             bear signals:
+//               pullback_s = macro down + price rejected by upper LR band
+//               cont_s     = macro down + price crosses below LR basis
+//    Params : lr_len (20), dev_mult (2.0), macro_len (50)
+//    Returns: [bull, bear, macro_up, lr_basis, lr_upper, lr_lower]
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_trend_channels(int lr_len = 20, float dev_mult = 2.0, int macro_len = 50) =>
+    atrV     = ta.atr(14)
+    basis    = ta.linreg(close, lr_len, 0)
+    stdevV   = ta.stdev(close, lr_len)
+    lr_upper = basis + stdevV * dev_mult
+    lr_lower = basis - stdevV * dev_mult
+    // Macro direction via LR slope over macro_len
+    basis_prev = ta.linreg(close, macro_len, macro_len)
+    basis_now  = ta.linreg(close, macro_len, 0)
+    range_size = ta.highest(high, macro_len) - ta.lowest(low, macro_len)
+    macro_up   = basis_now > basis_prev and range_size > atrV * 2.0
+    macro_down = basis_now < basis_prev and range_size > atrV * 2.0
+    // Micro signals
+    pullback_l = macro_up   and close > lr_lower and close[1] <= lr_lower
+    pullback_s = macro_down and close < lr_upper and close[1] >= lr_upper
+    cont_l     = macro_up   and ta.crossover(close, basis)
+    cont_s     = macro_down and ta.crossunder(close, basis)
+    bull = (pullback_l or cont_l) and barstate.isconfirmed
+    bear = (pullback_s or cont_s) and barstate.isconfirmed
+    [bull, bear, macro_up, basis, lr_upper, lr_lower]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. SESSION VWAP — Daily VWAP + StdDev bands, band retest signals
+//    Source : indicateurs/vwap
+//    Logic  : VWAP resets at each daily session open (ta.change(time("D"))).
+//             Three stddev bands above and below VWAP (mult1, mult2 used here).
+//             bull = wick LOW touches a band from above  (support bounce/retest)
+//             bear = wick HIGH touches a band from below (resistance rejection)
+//             cooldown_bars prevents signal clusters on the same band.
+//    Params : mult1 (1.0), mult2 (2.0), cooldown_bars (20)
+//    Returns: [bull, bear, vwap_value, upper1, lower1, upper2, lower2]
+// ─────────────────────────────────────────────────────────────────────────────
+export signal_vwap(float mult1 = 1.0, float mult2 = 2.0, int cooldown_bars = 20) =>
+    newDay = ta.change(time("D")) != 0
+    var float cumPV  = 0.0
+    var float cumV   = 0.0
+    var float cumPPV = 0.0
+    if newDay
+        cumPV  := close * volume
+        cumV   := volume
+        cumPPV := close * close * volume
+    else
+        cumPV  += close * volume
+        cumV   += volume
+        cumPPV += close * close * volume
+    vwapV    = cumV > 0 ? cumPV / cumV : close
+    variance = cumV > 0 ? math.max(cumPPV / cumV - math.pow(vwapV, 2), 0.0) : 0.0
+    stdev    = math.sqrt(variance)
+    u1 = vwapV + stdev * mult1
+    l1 = vwapV - stdev * mult1
+    u2 = vwapV + stdev * mult2
+    l2 = vwapV - stdev * mult2
+    // Wick touch detection
+    bullT = (low <= u1 and low[1] > u1) or (low <= l1 and low[1] > l1)
+          or (low <= u2 and low[1] > u2) or (low <= l2 and low[1] > l2)
+    bearT = (high >= u1 and high[1] < u1) or (high >= l1 and high[1] < l1)
+          or (high >= u2 and high[1] < u2) or (high >= l2 and high[1] < l2)
+    var int lastBull = -999
+    var int lastBear = -999
+    bull = bullT and (bar_index - lastBull) >= cooldown_bars and barstate.isconfirmed
+    bear = bearT and (bar_index - lastBear) >= cooldown_bars and barstate.isconfirmed
+    if bull
+        lastBull := bar_index
+    if bear
+        lastBear := bar_index
+    [bull, bear, vwapV, u1, l1, u2, l2]

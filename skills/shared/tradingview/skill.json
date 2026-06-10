@@ -1,0 +1,67 @@
+{
+  "name": "tradingview-strategy",
+  "version": "1.0.0",
+  "description": "OpenClaw shared skill -- TradingView strategy generation (Pine Script v6), backtest diagnosis, strategy selection from a canonical library, and webhook alert config. Pure logic, no exchange API calls. Signals are executed by the hyperliquid skill only.",
+  "author": "the maintainer",
+  "tools": [
+    {
+      "name": "tv_generate_strategy",
+      "description": "Generate a complete modular Pine Script v6 strategy (7-module pipeline). Always enforces //@version=6, process_orders_on_close=true, commissions >=0.1%, a max-drawdown kill switch, all params exposed via input.*, and the webhook JSON block. Returns the script plus recommended params and target metrics.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "description": { "type": "string", "description": "Natural-language description of the desired strategy" },
+          "market": { "type": "string", "description": "Target market/ticker, e.g. BTCUSDT, ETHUSDT, EURUSD, SPY" },
+          "timeframe": { "type": "string", "description": "Timeframe, e.g. 15m, 1h, 4h, 1d (or TV interval like 60, 240)" },
+          "style": { "type": "string", "enum": ["trend", "scalping", "mean_reversion", "breakout", "momentum"], "description": "Trading style; maps to the Pine signal module" }
+        },
+        "required": ["description", "market", "timeframe"]
+      }
+    },
+    {
+      "name": "tv_analyze_backtest",
+      "description": "Diagnose backtest metrics against deploy thresholds (WR>=55%, PF>=1.5, MaxDD<25%, trades>=50, Sharpe>=1.0) and the optimizer diagnostic table. Returns a verdict (deploy/optimize/reject), per-metric pass/fail, over-fitting red flags, issues and concrete recommendations.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "win_rate": { "type": "number", "description": "Win rate in percent, e.g. 58" },
+          "profit_factor": { "type": "number", "description": "Profit factor, e.g. 1.8" },
+          "max_drawdown": { "type": "number", "description": "Max drawdown in percent, e.g. 18" },
+          "total_trades": { "type": "number", "description": "Number of trades in the backtest" },
+          "sharpe": { "type": "number", "description": "Optional Sharpe ratio" }
+        },
+        "required": ["win_rate", "profit_factor", "max_drawdown", "total_trades"]
+      }
+    },
+    {
+      "name": "tv_select_strategy",
+      "description": "Recommend a strategy from the canonical library (STRATEGIES.json) based on market, timeframe and market regime. Returns the best match with starting params and target metrics, plus alternatives. Use before generating a strategy when the user has not specified one.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "market": { "type": "string", "description": "Market/ticker, e.g. BTC, ETH, EURUSD, SPY" },
+          "timeframe": { "type": "string", "description": "Timeframe, e.g. 5m, 1h, 4h, 1d" },
+          "regime": { "type": "string", "enum": ["trending", "ranging", "volatile", "breakout", "any"], "description": "Current market regime (optional, defaults to any)" }
+        },
+        "required": ["market"]
+      }
+    },
+    {
+      "name": "tv_create_webhook_config",
+      "description": "Build the TradingView alert message (JSON with TV placeholders) ready to paste into a strategy alert, and resolve which OpenClaw skill the exchange routes to. Only HYPERLIQUID executes for real; other exchanges are documented stubs. Never echoes the WEBHOOK_SECRET value.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "strategy_id": { "type": "string", "description": "Strategy identifier (matches strategy_id in the alert payload)" },
+          "exchange": { "type": "string", "description": "TradingView exchange name, e.g. HYPERLIQUID, BINANCE, BYBIT, NASDAQ. Default HYPERLIQUID." }
+        },
+        "required": ["strategy_id"]
+      }
+    },
+    {
+      "name": "tv_healthcheck",
+      "description": "Self-check: strategy library integrity, webhook env vars (WEBHOOK_SECRET, TV_WEBHOOK_PORT, TV_SIGNALS_DIR), and the exchange routing table. Safe to call anytime.",
+      "parameters": { "type": "object", "properties": {}, "required": [] }
+    }
+  ]
+}

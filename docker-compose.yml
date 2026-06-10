@@ -1,0 +1,47 @@
+# Pipeline alert-driven (optionnel) : TradingView alert → webhook → signals/ → executor → Bybit.
+# Le service openclaw a été retiré le 09.06.2026 (reliquats archivés → archive/openclaw/).
+
+services:
+  tradingview-webhook:
+    build:
+      context: .
+      dockerfile: tradingview/webhook/Dockerfile
+    container_name: agent-trader-tv-webhook
+    restart: unless-stopped
+    ports:
+      - "8088:8080"  # host:container — exposer derrière un reverse proxy pour recevoir les alertes TradingView
+    volumes:
+      # Même inbox signals/ que l'exécuteur (file inbox partagé)
+      - ./tradingview/signals:/signals
+    env_file:
+      - ./config/.env
+    environment:
+      - TZ=Europe/Zurich
+      - TV_SIGNALS_DIR=/signals
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  signal-executor:
+    build:
+      context: .
+      dockerfile: tradingview/executor/Dockerfile
+    container_name: agent-trader-signal-executor
+    restart: unless-stopped
+    depends_on:
+      - tradingview-webhook
+    volumes:
+      # Même inbox signals/ que le webhook (file inbox partagé)
+      - ./tradingview/signals:/signals
+    env_file:
+      - ./config/.env
+    environment:
+      - TZ=Europe/Zurich
+      - TV_SIGNALS_DIR=/signals
+      # DRY-RUN par défaut (0). Passer EXECUTOR_LIVE=1 dans config/.env pour exécuter réellement.
+      - EXECUTOR_LIVE=${EXECUTOR_LIVE:-0}
+      - EXECUTOR_MAX_PER_CYCLE=${EXECUTOR_MAX_PER_CYCLE:-2}
+      - EXECUTOR_POLL_SEC=${EXECUTOR_POLL_SEC:-15}

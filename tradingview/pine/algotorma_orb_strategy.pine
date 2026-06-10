@@ -1,0 +1,196 @@
+//@version=6
+strategy("Algo Torma ORB Strategy", overlay=true,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     max_lines_count=500)
+
+//════════════════════════════
+// INPUTS
+//════════════════════════════
+
+hardStopTicks  = input.int(80,  "Hard Stop (ticks)",        minval=1)
+trailPoints    = input.int(120, "Trail Activation (ticks)", minval=1)
+trailOffset    = input.int(60,  "Trail Offset (ticks)",     minval=1)
+
+minORBTicks    = input.int(40,  "Min ORB Size (ticks)",     minval=1)
+breakoutBuffer = input.int(10,  "Breakout Buffer (ticks)",  minval=1)
+
+maxTrades = input.int(2, "Max Trades Per Day", minval=1)
+
+//════════════════════════════
+// TIME
+//════════════════════════════
+
+tz = "America/New_York"
+
+h = hour(time, tz)
+m = minute(time, tz)
+
+is935 = h == 9 and m == 35
+
+tradeWindow = (h == 9 and m >= 35) or (h == 10 and m < 30)
+
+past1030 = (h > 10) or (h == 10 and m >= 30)
+
+// Fires exactly once on the transition into 10:30+
+enterPast1030 = past1030 and not past1030[1]
+
+//════════════════════════════
+// DAILY VARIABLES
+//════════════════════════════
+
+newDay = ta.change(time("D")) != 0
+
+var float orbHigh = na
+var float orbLow  = na
+
+var bool orbFormed   = false
+var bool longArmed   = false
+var bool shortArmed  = false
+
+var bool dailyLossHit = false
+
+var int tradeCount = 0
+
+var line highLine = na
+var line lowLine  = na
+
+if newDay
+    orbHigh      := na
+    orbLow       := na
+    orbFormed    := false
+    longArmed    := false
+    shortArmed   := false
+    tradeCount   := 0
+    dailyLossHit := false
+    // FIX 1 — cancel any pending limit orders from the previous session
+    strategy.cancel_all()
+
+//════════════════════════════
+// TRADE TRACKING
+//════════════════════════════
+
+if strategy.closedtrades > strategy.closedtrades[1]
+
+    tradeCount += 1
+
+    lastProfit = strategy.closedtrades.profit(
+         strategy.closedtrades - 1)
+
+    if lastProfit < 0
+        dailyLossHit := true
+
+//════════════════════════════
+// GET FIRST REAL 5M CANDLE
+//════════════════════════════
+
+fiveHigh = request.security(syminfo.tickerid, "5", high)
+fiveLow  = request.security(syminfo.tickerid, "5", low)
+
+if is935 and not orbFormed
+
+    orbHigh := fiveHigh[1]
+    orbLow  := fiveLow[1]
+
+    orbFormed := true
+
+    highLine := line.new(
+         bar_index, orbHigh, bar_index, orbHigh,
+         color=color.blue, width=2)
+
+    lowLine := line.new(
+         bar_index, orbLow, bar_index, orbLow,
+         color=color.red, width=2)
+
+//════════════════════════════
+// EXTEND LINES TO 10:30 ONLY
+//════════════════════════════
+
+if orbFormed and not past1030
+    line.set_x2(highLine, bar_index)
+    line.set_x2(lowLine,  bar_index)
+
+//════════════════════════════
+// ORB FILTER
+//════════════════════════════
+
+orbRange = orbHigh - orbLow
+
+validORB = orbRange >= (minORBTicks * syminfo.mintick)
+
+//════════════════════════════
+// BREAKOUT DETECTION
+//════════════════════════════
+
+inWindow = orbFormed and tradeWindow and validORB
+
+bullBO = inWindow and close > (orbHigh + breakoutBuffer * syminfo.mintick) and close[1] <= orbHigh
+bearBO = inWindow and close < (orbLow  - breakoutBuffer * syminfo.mintick) and close[1] >= orbLow
+
+if bullBO
+    longArmed  := true
+    // FIX 3 — mutual exclusion: a long breakout disarms the short side
+    shortArmed := false
+
+if bearBO
+    shortArmed := true
+    // FIX 3 — mutual exclusion: a short breakout disarms the long side
+    longArmed  := false
+
+//════════════════════════════
+// DISARM AT 10:30
+//════════════════════════════
+
+// FIX 4 — clear arms and cancel pending orders when the window closes
+if enterPast1030
+    longArmed  := false
+    shortArmed := false
+    strategy.cancel_all()
+
+//════════════════════════════
+// LIMIT ENTRIES
+//════════════════════════════
+
+// FIX 2 — tradeWindow guard prevents orders being placed after 10:30
+longSetup  = longArmed  and tradeWindow and strategy.position_size == 0 and tradeCount < maxTrades and not dailyLossHit
+shortSetup = shortArmed and tradeWindow and strategy.position_size == 0 and tradeCount < maxTrades and not dailyLossHit
+
+if longSetup
+    strategy.entry("Long",  strategy.long,  limit=orbHigh)
+
+if shortSetup
+    strategy.entry("Short", strategy.short, limit=orbLow)
+
+// Reset after fill
+if strategy.position_size > 0
+    longArmed  := false
+
+if strategy.position_size < 0
+    shortArmed := false
+
+//════════════════════════════
+// EXITS
+//════════════════════════════
+
+tick = syminfo.mintick
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit", "Long",
+         stop=strategy.position_avg_price - hardStopTicks * tick,
+         trail_points=trailPoints,
+         trail_offset=trailOffset)
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit", "Short",
+         stop=strategy.position_avg_price + hardStopTicks * tick,
+         trail_points=trailPoints,
+         trail_offset=trailOffset)
+
+//════════════════════════════
+// CLOSE AT 10:30
+//════════════════════════════
+
+if past1030 and strategy.position_size != 0
+    strategy.close_all(comment="10:30 Close")

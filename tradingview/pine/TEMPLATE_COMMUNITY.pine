@@ -1,0 +1,180 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════
+// TEMPLATE COMMUNITY-GRADE — base de création Pine v6 (voir PATTERNS.md)
+// Style d'exemple : breakout Donchian avec filtres activables + sizing risque.
+// Remplacer la SECTION "SIGNAUX" par la logique voulue ; tout le reste est réutilisable.
+// ════════════════════════════════════════════════════════════════════════
+strategy("Template Community-Grade []", overlay=true,
+     initial_capital         = 100000,
+     pyramiding              = 0,
+     process_orders_on_close = true,
+     calc_on_every_tick      = false,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.05,
+     slippage                = 1,
+     max_boxes_count         = 100,
+     max_lines_count         = 500,
+     max_labels_count        = 100)
+
+// ════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ════════════════════════════════════════════════════════════════════════
+allowLongs  = input.bool(true, "Autoriser longs",  group="📈 Entrée")
+allowShorts = input.bool(true, "Autoriser shorts", group="📈 Entrée")
+boLen       = input.int(20, "Breakout Lookback", minval=2, group="📈 Entrée")
+boBuffer    = input.float(0.5, "Breakout Buffer (ATR)", step=0.1, group="📈 Entrée")
+
+// --- Filtres activables (pattern signature communauté) ---
+useTrend  = input.bool(true, "Filtre tendance EMA", group="🔍 Filtres")
+emaLen    = input.int(200, "EMA length", minval=1, group="🔍 Filtres")
+useRsi    = input.bool(false, "Filtre RSI", group="🔍 Filtres")
+rsiLen    = input.int(14, "RSI length", minval=1, group="🔍 Filtres")
+useAtrDisp = input.bool(true, "Filtre déplacement ATR", group="🔍 Filtres")
+atrDispMlt = input.float(1.0, "Déplacement min (×ATR)", step=0.1, group="🔍 Filtres")
+
+// --- Timing ---
+useSession = input.bool(false, "Filtre session", group="🕒 Timing")
+sess       = input.session("0000-2359", "Session", group="🕒 Timing")
+tz         = input.string("Etc/UTC", "Timezone", group="🕒 Timing")
+
+// --- Risque & gestion ---
+sizingMode  = input.string("Risk Based", "Sizing", options=["Risk Based","Fixed %"], group="🛡️ Risque")
+riskPercent = input.float(1.0, "Risque % / trade", minval=0.01, maxval=20, step=0.1, group="🛡️ Risque")
+useCompound = input.bool(true, "Compounding", group="🛡️ Risque")
+atrLen      = input.int(14, "ATR Length", group="🛡️ Risque")
+slMult      = input.float(1.5, "SL ATR Mult", step=0.1, group="🛡️ Risque")
+tpMode      = input.string("2R", "TP mode", options=["1R","1.5R","2R","Trailing"], group="🛡️ Risque")
+trailPts    = input.float(2.0, "Trail Activation (×ATR)", step=0.1, group="🛡️ Risque")
+trailOff    = input.float(1.0, "Trail Offset (×ATR)", step=0.1, group="🛡️ Risque")
+maxTrades   = input.int(5, "Max trades / jour", minval=1, group="🛡️ Risque")
+maxDayLoss  = input.float(3.0, "Daily loss limit (% equity)", step=0.1, group="🛡️ Risque")
+kill        = input.bool(false, "🔴 Kill Switch", group="🛡️ Risque")
+
+// --- Affichage ---
+showDash    = input.bool(true, "Dashboard", group="👁️ Affichage")
+showLabels  = input.bool(true, "Labels signaux", group="👁️ Affichage")
+fromDate    = input.time(timestamp("2025-01-01"), "Backtest From", group="👁️ Affichage")
+inWindow    = time >= fromDate
+
+// ════════════════════════════════════════════════════════════════════════
+// INDICATEURS & FILTRES
+// ════════════════════════════════════════════════════════════════════════
+atrV   = ta.atr(atrLen)
+emaV   = ta.ema(close, emaLen)
+rsiV   = ta.rsi(close, rsiLen)
+disp   = math.abs(close - close[1])
+
+inSess = not useSession or not na(time(timeframe.period, sess, tz))
+trendOkL = not useTrend or close > emaV
+trendOkS = not useTrend or close < emaV
+rsiOkL   = not useRsi or rsiV > 50
+rsiOkS   = not useRsi or rsiV < 50
+dispOk   = not useAtrDisp or disp >= atrDispMlt * atrV
+
+// ════════════════════════════════════════════════════════════════════════
+// RESET JOURNALIER & GESTION
+// ════════════════════════════════════════════════════════════════════════
+newDay = ta.change(time("D")) != 0
+var int  tradeCount   = 0
+var float dayStartEq  = na
+var bool  dailyLossHit = false
+if newDay
+    tradeCount   := 0
+    dayStartEq   := strategy.equity
+    dailyLossHit := false
+if not na(dayStartEq) and strategy.equity <= dayStartEq * (1 - maxDayLoss / 100.0)
+    dailyLossHit := true
+if strategy.closedtrades > strategy.closedtrades[1]
+    tradeCount += 1
+
+canTrade = inWindow and inSess and not kill and not dailyLossHit and tradeCount < maxTrades
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAUX  (← remplacer cette section pour une autre stratégie)
+// ════════════════════════════════════════════════════════════════════════
+hhPrev = ta.highest(high, boLen)[1]
+llPrev = ta.lowest(low, boLen)[1]
+upBO   = ta.crossover(high, hhPrev + boBuffer * atrV)
+dnBO   = ta.crossunder(low,  llPrev - boBuffer * atrV)
+
+longSig  = canTrade and allowLongs  and barstate.isconfirmed and upBO and trendOkL and rsiOkL and dispOk
+shortSig = canTrade and allowShorts and barstate.isconfirmed and dnBO and trendOkS and rsiOkS and dispOk
+
+// ════════════════════════════════════════════════════════════════════════
+// SIZING BASÉ SUR LE RISQUE
+// ════════════════════════════════════════════════════════════════════════
+slLong  = close - slMult * atrV
+slShort = close + slMult * atrV
+stopDist = slMult * atrV
+eqBase   = useCompound ? strategy.equity : strategy.initial_capital
+riskCash = eqBase * riskPercent / 100.0
+qtyRisk  = stopDist > 0 ? riskCash / stopDist : 0.0
+qtyFixed = eqBase * (riskPercent / 100.0) / close
+qty      = sizingMode == "Risk Based" ? qtyRisk : qtyFixed
+
+rr = tpMode == "1R" ? 1.0 : tpMode == "1.5R" ? 1.5 : 2.0
+tpLong  = close + rr * stopDist
+tpShort = close - rr * stopDist
+useTrail = tpMode == "Trailing"
+
+// ════════════════════════════════════════════════════════════════════════
+// ENTRÉES / SORTIES
+// ════════════════════════════════════════════════════════════════════════
+if kill
+    strategy.close_all("Kill Switch")
+
+if longSig and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long, qty=qty)
+    strategy.exit("Exit L", "Long", stop=slLong, limit=useTrail ? na : tpLong,
+         trail_points = useTrail ? trailPts * atrV / syminfo.mintick : na,
+         trail_offset = useTrail ? trailOff * atrV / syminfo.mintick : na)
+
+if shortSig and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short, qty=qty)
+    strategy.exit("Exit S", "Short", stop=slShort, limit=useTrail ? na : tpShort,
+         trail_points = useTrail ? trailPts * atrV / syminfo.mintick : na,
+         trail_offset = useTrail ? trailOff * atrV / syminfo.mintick : na)
+
+// ════════════════════════════════════════════════════════════════════════
+// VISUELS
+// ════════════════════════════════════════════════════════════════════════
+plot(useTrend ? emaV : na, "EMA", color=color.new(color.gray, 0))
+if showLabels and longSig
+    label.new(bar_index, low,  "▲ Long",  style=label.style_label_up,   color=color.green, textcolor=color.white)
+if showLabels and shortSig
+    label.new(bar_index, high, "▼ Short", style=label.style_label_down, color=color.red,   textcolor=color.white)
+
+plot(strategy.position_size > 0 ? slLong  : na, "SL", color=color.red,   style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size > 0 ? tpLong  : na, "TP", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 ? slShort : na, "SL", color=color.red,   style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 ? tpShort : na, "TP", color=color.green, style=plot.style_linebr, linewidth=1)
+
+// --- Dashboard ---
+var table dash = table.new(position.top_right, 2, 6, border_width=1)
+if showDash and barstate.islast
+    wr = strategy.closedtrades > 0 ? strategy.wintrades * 100.0 / strategy.closedtrades : na
+    pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+    table.cell(dash, 0, 0, "STRAT", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 1, 0, syminfo.ticker, bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 0, 1, "Trades")
+    table.cell(dash, 1, 1, str.tostring(strategy.closedtrades))
+    table.cell(dash, 0, 2, "Winrate")
+    table.cell(dash, 1, 2, na(wr) ? "-" : str.tostring(wr, "#.##") + "%")
+    table.cell(dash, 0, 3, "Profit Factor")
+    table.cell(dash, 1, 3, na(pf) ? "-" : str.tostring(pf, "#.##"))
+    table.cell(dash, 0, 4, "Net PnL")
+    table.cell(dash, 1, 4, str.tostring(strategy.netprofit, "#.#"))
+    table.cell(dash, 0, 5, "Trades/j")
+    table.cell(dash, 1, 5, str.tostring(tradeCount))
+
+if barstate.islast and strategy.closedtrades < 200
+    label.new(bar_index, low, "⚠️ " + str.tostring(strategy.closedtrades) + " trades < 200 — TF plus bas",
+         style=label.style_label_up, color=color.orange, textcolor=color.black, size=size.small)
+
+// ════════════════════════════════════════════════════════════════════════
+// ALERTES + WEBHOOK
+// ════════════════════════════════════════════════════════════════════════
+alertcondition(longSig,  title="BUY",  message="LONG {{ticker}} {{interval}}")
+alertcondition(shortSig, title="SELL", message="SHORT {{ticker}} {{interval}}")
+// alert_message à coller dans l'alerte TradingView :
+// {"secret":"VOTRE_SECRET","action":"{{strategy.order.action}}","symbol":"{{ticker}}","price":{{close}},"qty_pct":1,"sl":0,"tp":0,"timeframe":"{{interval}}","exchange":"hyperliquid"}

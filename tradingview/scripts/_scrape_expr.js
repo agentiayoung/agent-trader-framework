@@ -1,0 +1,1 @@
+(function(){var e=[].slice.call(document.querySelectorAll('*')).find(function(x){return x.childElementCount===0 && x.textContent.trim()==='Facteur de profit';});if(!e)return 'NOTFOUND';var p=e;for(var i=0;i<7;i++){if(p.parentElement)p=p.parentElement;}return p.innerText;})()

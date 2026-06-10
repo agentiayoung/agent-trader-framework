@@ -1,0 +1,39 @@
+#!/bin/sh
+# pre-commit : bloque tout caractere non-ASCII dans les scripts .ps1 et .bat stages.
+#
+# RAISON : un em-dash (U+2013/U+2014) injecte dans $prompt de run-routine.ps1 a tue
+# 3 routines le 10.06.2026 (PowerShell ne parse plus -> LastTaskResult=1, aucun log,
+# decouvert 5h plus tard via le dead-man). Ce hook transforme la routine morte en
+# echec de commit immediat. Regle projet : les .ps1/.bat sont ASCII-only.
+#
+# Bypass volontaire (rarement justifie) : git commit --no-verify
+
+fail=0
+# Fichiers stages (Added/Copied/Modified) qui sont des .ps1 ou .bat
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -iE '\.(ps1|bat)$')
+
+for f in $files; do
+  # Contenu STAGE (pas le working tree) -> ce qui sera reellement committe
+  bad=$(git show ":$f" 2>/dev/null | grep -nP '[^\x00-\x7F]')
+  if [ -n "$bad" ]; then
+    if [ "$fail" -eq 0 ]; then
+      echo "ERREUR pre-commit : caractere(s) non-ASCII dans un script .ps1/.bat (regle ASCII-only)."
+      echo "Un em-dash ou guillemet typographique casse le parse PowerShell = routine morte silencieuse."
+      echo ""
+    fi
+    fail=1
+    echo "  >>> $f :"
+    echo "$bad" | sed 's/^/      ligne /'
+    echo ""
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "Corrige : remplace les caracteres typographiques par leur equivalent ASCII"
+  echo "  (— -> --, ' ' -> ' ', ' ' -> ', etc.) puis re-stage."
+  echo "Reperage rapide : grep -nP '[^\\x00-\\x7F]' <fichier>"
+  echo "Bypass (a tes risques) : git commit --no-verify"
+  exit 1
+fi
+
+exit 0

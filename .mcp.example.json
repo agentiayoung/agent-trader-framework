@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "tradingview-screener": {
+      "command": "uv",
+      "args": [
+        "tool", "run", "--from",
+        "git+https://github.com/atilaahmettaner/tradingview-mcp.git",
+        "tradingview-mcp"
+      ],
+      "description": "TradingView market screening — top gainers/losers, BB scan, RSI, MACD, patterns, coin_analysis (no Desktop needed)."
+    },
+    "tradingview-desktop": {
+      "command": "node",
+      "args": ["<PROJECT_ROOT>/tools/tradingview-mcp/dist/index.js"],
+      "description": "Optional: controls a live TradingView Desktop chart via CDP. Requires cloning the tradingview-mcp tool locally — see tradingview/README_MCP.md."
+    }
+  }
+}

@@ -1,0 +1,74 @@
+// ──────────────────────────────────────────────────────────────────────────────
+// CONFLUENCE ALERT SNIPPETS — copy-paste à la fin de chaque indicateur Pine
+// ──────────────────────────────────────────────────────────────────────────────
+// Format attendu par le webhook FastAPI /webhook/confluence
+// Doc : tradingview/indicateurs/confluence/README.md
+//
+// ⚠️ Remplacer REPLACE_WITH_SECRET par la vraie valeur dans TradingView
+//    avant d'activer l'alerte. Ne JAMAIS committer le secret réel.
+// ⚠️ Alertes à activer en "Once Per Bar Close" pour éviter le repaint.
+// ──────────────────────────────────────────────────────────────────────────────
+
+
+// ╔════════════════════════════════════════════════════════════════════════════╗
+// ║ 1. SYNAPSE TRAIL PRO                                                       ║
+// ║    Variables attendues du script : buyPasses, sellPasses, grade (string), ║
+// ║    qualityScore (int), slLevel, tp1Level, tp2Level, atrValue, regimeStr   ║
+// ╚════════════════════════════════════════════════════════════════════════════╝
+
+alertcondition(buyPasses and barstate.isconfirmed, "Confluence Synapse BUY",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"synapse_trail","ticker":"{{ticker}}","tf":"{{interval}}","side":"long","grade":"' + grade + '","quality_score":' + str.tostring(qualityScore) + ',"sl":' + str.tostring(slLevel) + ',"tp1":' + str.tostring(tp1Level) + ',"tp2":' + str.tostring(tp2Level) + ',"atr":' + str.tostring(atrValue) + ',"regime":"' + regimeStr + '","ts":{{timenow}}}')
+
+alertcondition(sellPasses and barstate.isconfirmed, "Confluence Synapse SELL",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"synapse_trail","ticker":"{{ticker}}","tf":"{{interval}}","side":"short","grade":"' + grade + '","quality_score":' + str.tostring(qualityScore) + ',"sl":' + str.tostring(slLevel) + ',"tp1":' + str.tostring(tp1Level) + ',"tp2":' + str.tostring(tp2Level) + ',"atr":' + str.tostring(atrValue) + ',"regime":"' + regimeStr + '","ts":{{timenow}}}')
+
+
+// ╔════════════════════════════════════════════════════════════════════════════╗
+// ║ 2. TREND CHANNELS — Anchored                                               ║
+// ║    Variables attendues : segbreak_up, segbreak_down, biasStr, regimeStr,  ║
+// ║    rSquared (float), macroAngle (float)                                   ║
+// ╚════════════════════════════════════════════════════════════════════════════╝
+
+alertcondition(segbreak_up and barstate.isconfirmed, "Confluence TrendCh BUY",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"trend_channels","ticker":"{{ticker}}","tf":"{{interval}}","side":"long","bias":"' + biasStr + '","regime":"' + regimeStr + '","event":"segbreak","r_squared":' + str.tostring(rSquared) + ',"macro_angle":' + str.tostring(macroAngle) + ',"ts":{{timenow}}}')
+
+alertcondition(segbreak_down and barstate.isconfirmed, "Confluence TrendCh SELL",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"trend_channels","ticker":"{{ticker}}","tf":"{{interval}}","side":"short","bias":"' + biasStr + '","regime":"' + regimeStr + '","event":"segbreak","r_squared":' + str.tostring(rSquared) + ',"macro_angle":' + str.tostring(macroAngle) + ',"ts":{{timenow}}}')
+
+
+// ╔════════════════════════════════════════════════════════════════════════════╗
+// ║ 3. VWAP + STDEV BANDS                                                      ║
+// ║    Variables attendues : anyBullRetest, anyBearRetest, bandTouched (str), ║
+// ║    vwapValue, sigma1Upper, sigma2Upper, sigma3Upper (et lower)            ║
+// ╚════════════════════════════════════════════════════════════════════════════╝
+
+alertcondition(anyBullRetest and barstate.isconfirmed, "Confluence VWAP Bull",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"vwap","ticker":"{{ticker}}","tf":"{{interval}}","event":"bull_retest","band":"' + bandTouched + '","vwap_value":' + str.tostring(vwapValue) + ',"sigma1":' + str.tostring(sigma1Lower) + ',"sigma2":' + str.tostring(sigma2Lower) + ',"sigma3":' + str.tostring(sigma3Lower) + ',"ts":{{timenow}}}')
+
+alertcondition(anyBearRetest and barstate.isconfirmed, "Confluence VWAP Bear",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"vwap","ticker":"{{ticker}}","tf":"{{interval}}","event":"bear_retest","band":"' + bandTouched + '","vwap_value":' + str.tostring(vwapValue) + ',"sigma1":' + str.tostring(sigma1Upper) + ',"sigma2":' + str.tostring(sigma2Upper) + ',"sigma3":' + str.tostring(sigma3Upper) + ',"ts":{{timenow}}}')
+
+
+// ╔════════════════════════════════════════════════════════════════════════════╗
+// ║ 4. AI SIGNAL — Remastered                                                  ║
+// ║    Variables attendues : bull, bear (ta.crossover / ta.crossunder)        ║
+// ╚════════════════════════════════════════════════════════════════════════════╝
+
+alertcondition(bull and barstate.isconfirmed, "Confluence AI BUY",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"ai_signal","ticker":"{{ticker}}","tf":"{{interval}}","side":"long","sensitivity":' + str.tostring(sensitivity) + ',"ts":{{timenow}}}')
+
+alertcondition(bear and barstate.isconfirmed, "Confluence AI SELL",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"ai_signal","ticker":"{{ticker}}","tf":"{{interval}}","side":"short","sensitivity":' + str.tostring(sensitivity) + ',"ts":{{timenow}}}')
+
+
+// ╔════════════════════════════════════════════════════════════════════════════╗
+// ║ 5. LUXALGO — Signal Forge                                                  ║
+// ║    Variables attendues : longCond, shortCond, filtersActive (int),        ║
+// ║    pfInternal, wrInternal (depuis dashboard interne)                       ║
+// ╚════════════════════════════════════════════════════════════════════════════╝
+
+alertcondition(longCond and barstate.isconfirmed, "Confluence LuxAlgo BUY",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"luxalgo","ticker":"{{ticker}}","tf":"{{interval}}","side":"long","filters_active":' + str.tostring(filtersActive) + ',"pf_internal":' + str.tostring(pfInternal) + ',"wr_internal":' + str.tostring(wrInternal) + ',"ts":{{timenow}}}')
+
+alertcondition(shortCond and barstate.isconfirmed, "Confluence LuxAlgo SELL",
+  '{"secret":"REPLACE_WITH_SECRET","indicator":"luxalgo","ticker":"{{ticker}}","tf":"{{interval}}","side":"short","filters_active":' + str.tostring(filtersActive) + ',"pf_internal":' + str.tostring(pfInternal) + ',"wr_internal":' + str.tostring(wrInternal) + ',"ts":{{timenow}}}')

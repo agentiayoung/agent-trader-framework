@@ -1,0 +1,410 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════
+// MASTER AGGREGATOR —  Agent Trader
+// ════════════════════════════════════════════════════════════════════════
+// Version  : 1.0.0
+// Source   : tradingview/indicateurs/master_aggregator.pine
+// Purpose  : Combines all 7 indicateurs/ signals into a single scoring view.
+//            Score 0→7 bull / 0→7 bear based on each indicator state.
+//            Visual overlays: VWAP bands, S/R levels, Synapse Trail.
+//            Alert fires when combined score reaches threshold.
+// Signals  :
+//   [1] AI Signal        — Keltner Supertrend crossover
+//   [2] LuxAlgo          — SMA+RSI+MACD+ST multi-aggregation
+//   [3] Orderblock (TMF) — Twiggs Money Flow zero-cross
+//   [4] S/R Zones        — Pivot proximity (support/resistance)
+//   [5] Synapse Trail    — ATR ratchet trail direction flip
+//   [6] Trend Channels   — LR channel macro/micro signals
+//   [7] Session VWAP     — Band retest (bounce/rejection)
+// ════════════════════════════════════════════════════════════════════════
+strategy("Master Aggregator []", overlay=true,
+     initial_capital=100000, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10, commission_type=strategy.commission.percent,
+     commission_value=0.05, slippage=2,
+     max_labels_count=100, max_lines_count=200, max_boxes_count=50)
+
+// ════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ════════════════════════════════════════════════════════════════════════
+GRP_AGG   = "🎯 Aggregator"
+GRP_AI    = "① AI Signal"
+GRP_LUX   = "② LuxAlgo"
+GRP_OB    = "③ Orderblock (TMF)"
+GRP_SR    = "④ S/R Zones"
+GRP_STP   = "⑤ Synapse Trail"
+GRP_TC    = "⑥ Trend Channels"
+GRP_VW    = "⑦ Session VWAP"
+GRP_VIS   = "👁 Visual"
+GRP_ALT   = "🔔 Alerts"
+
+killSwitch  = input.bool(false, "🔴 Kill Switch (disable alerts)", group=GRP_AGG)
+minScore     = input.int(4, "Min Score to Signal", minval=1, maxval=7, group=GRP_AGG)
+sigCooldown  = input.int(3, "Signal Cooldown (bars)", minval=1, maxval=50, group=GRP_AGG)
+useEmaFilter = input.bool(true,  "Use EMA Trend Filter", group=GRP_AGG)
+emaFilterLen = input.int(200, "EMA Filter Length",    minval=50, maxval=500, group=GRP_AGG)
+showBg       = input.bool(true,  "Show Background Color", group=GRP_AGG)
+showDash    = input.bool(true,  "Show Dashboard", group=GRP_AGG)
+showLabels  = input.bool(true,  "Show Aggregated Labels", group=GRP_AGG)
+
+// AI Signal
+aiSens      = input.float(2.8, "Sensitivity",    minval=0.5, maxval=10.0, step=0.1, group=GRP_AI)
+aiKelLen    = input.int(10,    "Keltner Length",  minval=1,                          group=GRP_AI)
+
+// LuxAlgo
+luxFast     = input.int(10, "SMA Fast", minval=1, group=GRP_LUX)
+luxSlow     = input.int(20, "SMA Slow", minval=1, group=GRP_LUX)
+luxUseRsi   = input.bool(false, "Use RSI", group=GRP_LUX)
+luxRsiLen   = input.int(14, "RSI Length", minval=1, group=GRP_LUX)
+luxUseMacd  = input.bool(false, "Use MACD", group=GRP_LUX)
+luxUseSt    = input.bool(false, "Use Supertrend", group=GRP_LUX)
+luxRequAll  = input.bool(true, "Require All (AND logic)", group=GRP_LUX)
+
+// Orderblock TMF
+tmfLen      = input.int(21, "TMF Length", minval=1,  group=GRP_OB)
+tmfSigLen   = input.int(9,  "Signal EMA", minval=1,  group=GRP_OB)
+
+// S/R Zones
+srSpan      = input.int(5, "Pivot Span",     minval=2,  group=GRP_SR)
+srAtrMult   = input.float(0.4, "Zone ATR ×", minval=0.05, step=0.05, group=GRP_SR)
+
+// Synapse Trail
+stpAtrLen   = input.int(13,    "ATR Length",    minval=1,   group=GRP_STP)
+stpMult     = input.float(1.618, "Multiplier",  step=0.001, group=GRP_STP)
+stpTrailLen = input.int(21,    "Trail EMA Len", minval=1,   group=GRP_STP)
+stpMinQual  = input.int(0,     "Min Quality",   minval=0, maxval=100, group=GRP_STP)
+
+// Trend Channels
+tcLrLen     = input.int(20,   "LR Length",    minval=5,  group=GRP_TC)
+tcDevMult   = input.float(2.0,"Dev Mult",     step=0.1,  group=GRP_TC)
+tcMacroLen  = input.int(50,   "Macro Length", minval=10, group=GRP_TC)
+
+// VWAP
+vwMult1     = input.float(1.0, "Band 1 Mult", step=0.5, group=GRP_VW)
+vwMult2     = input.float(2.0, "Band 2 Mult", step=0.5, group=GRP_VW)
+vwCooldown  = input.int(20, "Cooldown Bars", minval=1, maxval=50, group=GRP_VW)
+
+showTrail   = input.bool(true, "Show Trail",       group=GRP_VIS)
+showVwap    = input.bool(true, "Show VWAP Bands",  group=GRP_VIS)
+showSR      = input.bool(true, "Show S/R Levels",  group=GRP_VIS)
+
+GRP_RISK = "🛡️ Risque"
+slMult   = input.float(1.5, "SL ATR ×",        minval=0.5, step=0.1, group=GRP_RISK)
+tpMult   = input.float(3.0, "TP ATR ×",        minval=0.5, step=0.1, group=GRP_RISK)
+maxDD    = input.float(15.0, "Max Drawdown %", minval=1.0, step=1.0, group=GRP_RISK)
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 1 — AI SIGNAL (Keltner Supertrend)
+// ════════════════════════════════════════════════════════════════════════
+rng2_ai   = 2.0 * (high - low)
+raw_ub_ai = close + aiSens * rng2_ai
+raw_lb_ai = close - aiSens * rng2_ai
+var float ai_lb = na
+var float ai_ub = na
+var int   ai_dir = 1
+var float ai_st  = na
+ai_lb := raw_lb_ai > nz(ai_lb[1]) or close[1] < nz(ai_lb[1]) ? raw_lb_ai : nz(ai_lb[1])
+ai_ub := raw_ub_ai < nz(ai_ub[1]) or close[1] > nz(ai_ub[1]) ? raw_ub_ai : nz(ai_ub[1])
+pST_ai = nz(ai_st[1])
+if bar_index == 0
+    ai_dir := 1
+    ai_st  := ai_ub
+else if pST_ai == nz(ai_ub[1])
+    ai_dir := close > ai_ub ? -1 : 1
+else
+    ai_dir := close < ai_lb ? 1 : -1
+ai_st    := ai_dir == -1 ? ai_lb : ai_ub
+// Live state: 1=above trail (bull), -1=below trail (bear)
+ai_live   = ai_dir == -1 ? 1 : -1
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 2 — LUXALGO (SMA + optional RSI/MACD/ST)
+// ════════════════════════════════════════════════════════════════════════
+lux_smaBull = ta.sma(close, luxFast) > ta.sma(close, luxSlow)
+lux_smaBear = ta.sma(close, luxFast) < ta.sma(close, luxSlow)
+lux_rsiV    = ta.rsi(close, luxRsiLen)
+lux_rsiBull = not luxUseRsi or lux_rsiV >= 50
+lux_rsiBear = not luxUseRsi or lux_rsiV <= 50
+[lux_ml, lux_ms, _] = ta.macd(close, 12, 26, 9)
+lux_macdBull = not luxUseMacd or lux_ml > lux_ms
+lux_macdBear = not luxUseMacd or lux_ml < lux_ms
+[_, lux_stDir] = ta.supertrend(3.0, 10)
+lux_stBull   = not luxUseSt or lux_stDir < 0
+lux_stBear   = not luxUseSt or lux_stDir > 0
+lux_cBull = luxRequAll ? (lux_smaBull and lux_rsiBull and lux_macdBull and lux_stBull)
+          :               (lux_smaBull or  lux_rsiBull or  lux_macdBull or  lux_stBull)
+lux_cBear = luxRequAll ? (lux_smaBear and lux_rsiBear and lux_macdBear and lux_stBear)
+          :               (lux_smaBear or  lux_rsiBear or  lux_macdBear or  lux_stBear)
+// Live state: 1=fast SMA > slow SMA (bull), -1=bear, 0=equal
+lux_live  = lux_cBull ? 1 : lux_cBear ? -1 : 0
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 3 — ORDERBLOCK (Twiggs Money Flow)
+// ════════════════════════════════════════════════════════════════════════
+ob_trHigh  = math.max(high, close[1])
+ob_trLow   = math.min(low,  close[1])
+ob_trRange = ob_trHigh - ob_trLow
+ob_buyVol  = ob_trRange > 0 ? volume * (close - ob_trLow)    / ob_trRange : 0.0
+ob_sellVol = ob_trRange > 0 ? volume * (ob_trHigh - close)   / ob_trRange : 0.0
+ob_raw     = ta.ema(ob_buyVol - ob_sellVol, tmfLen)
+ob_vol     = ta.ema(volume, tmfLen)
+ob_tmf     = ob_vol > 0 ? ob_raw / ob_vol : 0.0
+// Live state: 1=TMF > 0 (buying pressure), -1=TMF < 0 (selling pressure)
+ob_live   = ob_tmf > 0 ? 1 : ob_tmf < 0 ? -1 : 0
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 4 — S/R ZONES (Pivot proximity)
+// ════════════════════════════════════════════════════════════════════════
+sr_atr  = ta.atr(14)
+sr_zone = sr_atr * srAtrMult
+sr_ph   = ta.pivothigh(high, srSpan, srSpan)
+sr_pl   = ta.pivotlow(low,  srSpan, srSpan)
+var float sr_sup = na
+var float sr_res = na
+if not na(sr_pl)
+    sr_sup := sr_pl
+if not na(sr_ph)
+    sr_res := sr_ph
+sr_inSup = not na(sr_sup) and low  <= sr_sup + sr_zone and high >= sr_sup - sr_zone
+sr_inRes = not na(sr_res) and high >= sr_res - sr_zone and low  <= sr_res + sr_zone
+// Live state: 1=price in support zone, -1=price in resistance zone
+sr_live   = sr_inSup ? 1 : sr_inRes ? -1 : 0
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 5 — SYNAPSE TRAIL (ATR ratchet)
+// ════════════════════════════════════════════════════════════════════════
+stp_atr    = ta.atr(stpAtrLen)
+stp_center = ta.ema(close, stpTrailLen)
+stp_ub     = stp_center + stp_atr * stpMult
+stp_lb     = stp_center - stp_atr * stpMult
+var float stp_trail = na
+var int   stp_dir   = 1
+if stp_dir == 1
+    stp_trail := math.max(nz(stp_trail[1], stp_lb), stp_lb)
+    if close < stp_trail
+        stp_dir   := -1
+        stp_trail := stp_ub
+else
+    stp_trail := math.min(nz(stp_trail[1], stp_ub), stp_ub)
+    if close > stp_trail
+        stp_dir   := 1
+        stp_trail := stp_lb
+[_, _, stp_adx]  = ta.dmi(14, 14)
+stp_adxScore     = math.min(stp_adx / 50.0 * 100.0, 100.0)
+stp_hiH          = ta.highest(high, 14)
+stp_loL          = ta.lowest(low,  14)
+stp_denom        = stp_hiH - stp_loL
+stp_chop         = stp_denom > 0 ? 100.0 * math.log10(ta.atr(1) * 14.0 / stp_denom) / math.log10(14.0) : 50.0
+stp_chopScore    = math.max(0.0, math.min(100.0 - stp_chop, 100.0))
+stp_quality      = int(math.round(stp_adxScore * 0.55 + stp_chopScore * 0.45))
+stp_bull         = stp_dir == 1  and stp_dir[1] == -1 and stp_quality >= stpMinQual and barstate.isconfirmed
+stp_bear         = stp_dir == -1 and stp_dir[1] == 1  and stp_quality >= stpMinQual and barstate.isconfirmed
+// Live state: trail direction (1=bull ratchet up, -1=bear ratchet down)
+stp_live         = stp_dir
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 6 — TREND CHANNELS (LR channel)
+// ════════════════════════════════════════════════════════════════════════
+tc_atr        = ta.atr(14)
+tc_basis      = ta.linreg(close, tcLrLen, 0)
+tc_stdev      = ta.stdev(close, tcLrLen)
+tc_upper      = tc_basis + tc_stdev * tcDevMult
+tc_lower      = tc_basis - tc_stdev * tcDevMult
+tc_basis_old  = ta.linreg(close, tcMacroLen, tcMacroLen)
+tc_basis_now  = ta.linreg(close, tcMacroLen, 0)
+tc_range      = ta.highest(high, tcMacroLen) - ta.lowest(low, tcMacroLen)
+tc_macro_up   = tc_basis_now > tc_basis_old and tc_range > tc_atr * 2.0
+tc_macro_dn   = tc_basis_now < tc_basis_old and tc_range > tc_atr * 2.0
+tc_pull_l     = tc_macro_up and close > tc_lower and close[1] <= tc_lower
+tc_pull_s     = tc_macro_dn and close < tc_upper and close[1] >= tc_upper
+tc_cont_l     = tc_macro_up and ta.crossover(close, tc_basis)
+tc_cont_s     = tc_macro_dn and ta.crossunder(close, tc_basis)
+// Live state: 1=macro uptrend (LR slope up), -1=macro downtrend, 0=no trend
+tc_live   = tc_macro_up ? 1 : tc_macro_dn ? -1 : 0
+
+// ════════════════════════════════════════════════════════════════════════
+// SIGNAL 7 — SESSION VWAP
+// ════════════════════════════════════════════════════════════════════════
+vw_newDay = ta.change(time("D")) != 0
+var float vw_cumPV  = 0.0
+var float vw_cumV   = 0.0
+var float vw_cumPPV = 0.0
+if vw_newDay
+    vw_cumPV  := close * volume
+    vw_cumV   := volume
+    vw_cumPPV := close * close * volume
+else
+    vw_cumPV  += close * volume
+    vw_cumV   += volume
+    vw_cumPPV += close * close * volume
+vw_vwap   = vw_cumV > 0 ? vw_cumPV / vw_cumV : close
+vw_var    = vw_cumV > 0 ? math.max(vw_cumPPV / vw_cumV - math.pow(vw_vwap, 2), 0.0) : 0.0
+vw_stdev  = math.sqrt(vw_var)
+vw_u1     = vw_vwap + vw_stdev * vwMult1
+vw_l1     = vw_vwap - vw_stdev * vwMult1
+vw_u2     = vw_vwap + vw_stdev * vwMult2
+vw_l2     = vw_vwap - vw_stdev * vwMult2
+vw_bullT  = (low <= vw_u1 and low[1] > vw_u1) or (low <= vw_l1 and low[1] > vw_l1)
+          or (low <= vw_u2 and low[1] > vw_u2) or (low <= vw_l2 and low[1] > vw_l2)
+vw_bearT  = (high >= vw_u1 and high[1] < vw_u1) or (high >= vw_l1 and high[1] < vw_l1)
+          or (high >= vw_u2 and high[1] < vw_u2) or (high >= vw_l2 and high[1] < vw_l2)
+var int vw_lastBull = -999
+var int vw_lastBear = -999
+vw_bull = vw_bullT and (bar_index - vw_lastBull) >= vwCooldown and barstate.isconfirmed
+vw_bear = vw_bearT and (bar_index - vw_lastBear) >= vwCooldown and barstate.isconfirmed
+if vw_bull
+    vw_lastBull := bar_index
+if vw_bear
+    vw_lastBear := bar_index
+// Live state: 1=price above VWAP (bull), -1=price below VWAP (bear)
+vw_live   = close > vw_vwap ? 1 : close < vw_vwap ? -1 : 0
+
+// ════════════════════════════════════════════════════════════════════════
+// SCORE AGGREGATION
+// ════════════════════════════════════════════════════════════════════════
+// Current state of each indicator: 1=bull, -1=bear, 0=neutral
+bull_score = (ai_live  == 1 ? 1 : 0) + (lux_live == 1 ? 1 : 0)
+           + (ob_live  == 1 ? 1 : 0)  + (sr_live  == 1 ? 1 : 0)
+           + (stp_live == 1 ? 1 : 0)  + (tc_live  == 1 ? 1 : 0)
+           + (vw_live  == 1 ? 1 : 0)
+bear_score = (ai_live  == -1 ? 1 : 0) + (lux_live == -1 ? 1 : 0)
+           + (ob_live  == -1 ? 1 : 0)  + (sr_live  == -1 ? 1 : 0)
+           + (stp_live == -1 ? 1 : 0)  + (tc_live  == -1 ? 1 : 0)
+           + (vw_live  == -1 ? 1 : 0)
+
+// Strategy entry conditions
+atr14    = ta.atr(14)
+equity   = strategy.equity
+var float equityPeak = 0.0
+equityPeak := math.max(equityPeak, equity)
+ddPct    = equityPeak > 0 ? (equityPeak - equity) / equityPeak * 100 : 0.0
+ddOk     = ddPct < maxDD
+
+// EMA trend filter — aligns entries with major trend direction
+ema_filter = ta.ema(close, emaFilterLen)
+trendUp    = not useEmaFilter or close > ema_filter
+trendDn    = not useEmaFilter or close < ema_filter
+
+inLong   = strategy.position_size > 0
+inShort  = strategy.position_size < 0
+
+// bear_score < minScore-1 : évite les entrées en zone conflictuelle
+enterLong  = bull_score >= minScore and bear_score < (minScore - 1) and trendUp and not killSwitch and ddOk and barstate.isconfirmed
+enterShort = bear_score >= minScore and bull_score < (minScore - 1) and trendDn and not killSwitch and ddOk and barstate.isconfirmed
+
+// ════════════════════════════════════════════════════════════════════════
+// VISUAL — Trail, VWAP, S/R, Score Labels
+// ════════════════════════════════════════════════════════════════════════
+// Background: tint when score is above threshold
+bull_bg = bull_score >= minScore and bear_score < minScore
+bear_bg = bear_score >= minScore and bull_score < minScore
+bgcolor(showBg and bull_bg ? color.new(#26a69a, 88) :
+        showBg and bear_bg ? color.new(#ef5350, 88) : na, title="Score BG")
+
+// Synapse Trail plot
+plot(showTrail ? stp_trail : na, "Synapse Trail",
+     color = stp_dir == 1 ? color.new(#26a69a, 20) : color.new(#ef5350, 20),
+     linewidth = 2, style = plot.style_linebr)
+
+// VWAP + bands
+plot(showVwap ? vw_vwap : na, "VWAP",    color = color.new(#e2e8f0, 0),  linewidth = 2)
+plot(showVwap ? vw_u1   : na, "VWAP +1σ", color = color.new(#00bcd4, 50), linewidth = 1)
+plot(showVwap ? vw_l1   : na, "VWAP -1σ", color = color.new(#00bcd4, 50), linewidth = 1)
+plot(showVwap ? vw_u2   : na, "VWAP +2σ", color = color.new(#7c4dff, 50), linewidth = 1)
+plot(showVwap ? vw_l2   : na, "VWAP -2σ", color = color.new(#7c4dff, 50), linewidth = 1)
+
+// S/R horizontal lines (refreshed each new level)
+var line sup_line = na
+var line res_line = na
+if showSR and not na(sr_sup)
+    line.delete(sup_line)
+    sup_line := line.new(bar_index - 30, sr_sup, bar_index + 5, sr_sup,
+         color = color.new(#26a69a, 40), width = 1, style = line.style_dashed)
+if showSR and not na(sr_res)
+    line.delete(res_line)
+    res_line := line.new(bar_index - 30, sr_res, bar_index + 5, sr_res,
+         color = color.new(#ef5350, 40), width = 1, style = line.style_dashed)
+
+// EMA Trend Filter
+plot(useEmaFilter ? ema_filter : na, "EMA " + str.tostring(emaFilterLen),
+     color = color.new(#ffffff, 55), linewidth = 2, style = plot.style_line)
+
+// Trend Channel LR
+plot(tc_basis, "LR Basis", color = color.new(#ffc107, 60), linewidth = 1)
+plot(tc_upper, "LR Upper", color = color.new(#ffc107, 80), linewidth = 1, style = plot.style_linebr)
+plot(tc_lower, "LR Lower", color = color.new(#ffc107, 80), linewidth = 1, style = plot.style_linebr)
+
+// Labels generated in strategy entry blocks below
+
+// ════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ════════════════════════════════════════════════════════════════════════
+stateStr(int s) => s == 1 ? "🟢 BULL" : s == -1 ? "🔴 BEAR" : "⚪ FLAT"
+stateCol(int s) => s == 1 ? #26a69a    : s == -1 ? #ef5350    : #9e9e9e
+
+if showDash and barstate.islast
+    var table dash = table.new(position.top_right, 3, 10,
+         bgcolor = #1a1a2e, border_color = #2e2e5e, border_width = 1, frame_color = #2e2e5e, frame_width = 1)
+    // Header
+    table.cell(dash, 0, 0, "INDICATOR",  text_color = #808080, text_size = size.small, bgcolor = #16213e)
+    table.cell(dash, 1, 0, "STATE",      text_color = #808080, text_size = size.small, bgcolor = #16213e)
+    table.cell(dash, 2, 0, "SCORE",      text_color = #808080, text_size = size.small, bgcolor = #16213e)
+    // Rows
+    table.cell(dash, 0, 1, "① AI Signal",        text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 1, stateStr(ai_live),    text_color = stateCol(ai_live),   text_size = size.small)
+    table.cell(dash, 0, 2, "② LuxAlgo",          text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 2, stateStr(lux_live),   text_color = stateCol(lux_live),  text_size = size.small)
+    table.cell(dash, 0, 3, "③ Orderblock",       text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 3, stateStr(ob_live),    text_color = stateCol(ob_live),   text_size = size.small)
+    table.cell(dash, 0, 4, "④ S/R Zones",        text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 4, stateStr(sr_live),    text_color = stateCol(sr_live),   text_size = size.small)
+    table.cell(dash, 0, 5, "⑤ Synapse Trail",    text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 5, stateStr(stp_live),   text_color = stateCol(stp_live),  text_size = size.small)
+    table.cell(dash, 2, 5, str.tostring(stp_quality) + "%", text_color = #c0c0c0,  text_size = size.small)
+    table.cell(dash, 0, 6, "⑥ Trend Channels",   text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 6, stateStr(tc_live),    text_color = stateCol(tc_live),   text_size = size.small)
+    table.cell(dash, 0, 7, "⑦ VWAP",             text_color = #c0c0c0, text_size = size.small)
+    table.cell(dash, 1, 7, stateStr(vw_live),    text_color = stateCol(vw_live),   text_size = size.small)
+    // Separator
+    table.cell(dash, 0, 8, "─────────────",  text_color = #444466, text_size = size.small)
+    table.cell(dash, 1, 8, "─────────",      text_color = #444466, text_size = size.small)
+    table.cell(dash, 2, 8, "───────",        text_color = #444466, text_size = size.small)
+    // Score row
+    scoreColor = bull_score >= minScore ? #26a69a : bear_score >= minScore ? #ef5350 : #9e9e9e
+    table.cell(dash, 0, 9, "BULL/BEAR",
+         text_color = #c0c0c0, text_size = size.normal, bgcolor = #16213e)
+    table.cell(dash, 1, 9, str.tostring(bull_score) + "↑ / " + str.tostring(bear_score) + "↓",
+         text_color = scoreColor, text_size = size.normal, bgcolor = #16213e)
+    table.cell(dash, 2, 9, "min " + str.tostring(minScore),
+         text_color = #808080, text_size = size.small, bgcolor = #16213e)
+
+// ════════════════════════════════════════════════════════════════════════
+// STRATEGY ENTRIES / EXITS
+// ════════════════════════════════════════════════════════════════════════
+if enterLong and not inLong
+    strategy.entry("Long", strategy.long)
+    strategy.exit("SL/TP L", "Long", stop=close - slMult*atr14, limit=close + tpMult*atr14)
+    if showLabels
+        label.new(bar_index, low - atr14*1.5,
+             "▲ LONG [" + str.tostring(bull_score) + "/7]",
+             style=label.style_label_up, color=#26a69a, textcolor=color.white, size=size.normal)
+
+if enterShort and not inShort
+    strategy.entry("Short", strategy.short)
+    strategy.exit("SL/TP S", "Short", stop=close + slMult*atr14, limit=close - tpMult*atr14)
+    if showLabels
+        label.new(bar_index, high + atr14*1.5,
+             "▼ SHORT [" + str.tostring(bear_score) + "/7]",
+             style=label.style_label_down, color=#ef5350, textcolor=color.white, size=size.normal)
+
+// Exit uniquement sur score flip — stp_live retiré (trop bruité sur TF court)
+if inLong and bear_score >= minScore
+    strategy.close("Long", comment="SCORE FLIP")
+
+if inShort and bull_score >= minScore
+    strategy.close("Short", comment="SCORE FLIP")
+
+// WEBHOOK — alert() accepts series string
+if enterLong and not killSwitch
+    alert('{"action":"buy","source":"master_aggregator","score":' + str.tostring(bull_score) + ',"ticker":"{{ticker}}","tf":"{{interval}}","price":{{close}}}', alert.freq_once_per_bar_close)
+if enterShort and not killSwitch
+    alert('{"action":"sell","source":"master_aggregator","score":' + str.tostring(bear_score) + ',"ticker":"{{ticker}}","tf":"{{interval}}","price":{{close}}}', alert.freq_once_per_bar_close)

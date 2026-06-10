@@ -1,0 +1,12 @@
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+.git
+.gitignore
+data
+_local_signals
+signals_inbox
+**/processed
+*.log
+tools/tradingview-mcp

@@ -1,0 +1,1118 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © MQLSoftware
+
+// =============================================================================
+// ANCHORED TREND CHANNELS [MQLSoftware]
+// =============================================================================
+// A pivot-anchored channel system that maps each phase of price action between
+// confirmed swing points as its own parallel trend channel. Stacks two scales
+// on one chart: large Macro segments (the trend phases) and an adaptive Micro
+// regression channel (the current momentum slice) within the active segment.
+//
+// Author:  MQLSoftware
+// License: Mozilla Public License 2.0
+// =============================================================================
+
+// =============================================================================
+// REPAINTING TRANSPARENCY (Pine Coders standard disclosure):
+//
+// 1. HISTORICAL SEGMENTS (frozen, dimmed): DO NOT repaint.
+//    Built from ta.pivothigh/pivotlow with right_bars=pivot_lb. A pivot is only
+//    confirmed pivot_lb bars after its formation, so historical pivots cannot
+//    move retroactively. Frozen segments remain anchored forever.
+//
+// 2. ACTIVE SEGMENT (bright, glowing, with right-extending dashed projection):
+//    - Non-Repaint Mode ON (default): uses close[1] for end-of-segment calc,
+//      so the active channel only updates on bar close. Stable visualization.
+//    - Non-Repaint Mode OFF: live update on every tick — visually smoother but
+//      the active channel "wobbles" intra-bar. Use only if you want max
+//      responsiveness and accept the visual jitter.
+//
+// 3. PIVOT DETECTION DELAY: pivots become visible pivot_lb bars after they
+//    actually formed (typical 18-30 bars for Long/Very Long sensitivity).
+//    This is an inherent property of all pivot-based indicators including
+//    Zeiierman, LuxAlgo, and TradingView's own built-ins.
+//
+// 4. SIGNALS (PB/BRK/CONT) are gated by barstate.isconfirmed — they fire ONLY
+//    once per closed bar and never intra-bar. Safe to use with "Once Per Bar"
+//    alert frequency.
+//
+// 5. MTF data (240/1D in panel) uses lookahead=barmerge.lookahead_off + [1]
+//    offset on every series — strictly non-repainting HTF reads.
+// =============================================================================
+//@version=6
+indicator("Anchored Trend Channels [MQLSoftware]", shorttitle="MQLSoftware - Anchored Trend Channels",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=100,
+     max_boxes_count=50,
+     max_bars_back=5000)
+
+// ============================================================================
+// SECTION 0 — DESIGN TOKENS (Neo Slate)
+// ============================================================================
+
+color C_MACRO_UP   = color.rgb( 29, 158, 117)  // teal — bull macro
+color C_MACRO_DN   = color.rgb(216,  90,  48)  // coral — bear macro
+color C_MICRO_UP   = color.rgb(  0, 210, 255)  // cyan — bull micro accent
+color C_MICRO_DN   = color.rgb(255,  70, 105)  // coral-red — bear micro
+color C_AMBER      = color.rgb(255, 175,  20)
+color C_WHITE      = color.rgb(225, 230, 240)
+color C_LBL        = color.rgb(170, 178, 195)
+color C_DIM        = color.rgb(140, 148, 168)
+color C_SEC        = color.rgb( 90,  98, 115)
+
+color P_BG         = color.new(color.rgb(  8,  11,  18),  4)
+color P_ROW        = color.new(color.rgb( 16,  20,  30),  6)
+color P_SEP        = color.new(color.rgb( 30,  38,  56), 10)
+
+// ============================================================================
+// SECTION 1 — INPUTS
+// ============================================================================
+
+string grp_quick   = "Quick Setup"
+string grp_macro   = "Macro Segments"
+string grp_micro   = "Micro Channel"
+string grp_signals = "Signals"
+string grp_visual  = "Visual"
+string grp_alerts  = "Alerts"
+
+bool show_macro_inp    = input.bool(true,  "Show Macro Segments",     group=grp_quick)
+bool show_micro_inp    = input.bool(true,  "Show Micro Channel",      group=grp_quick)
+bool show_panel_inp    = input.bool(true,  "Show Panel",              group=grp_quick)
+bool show_status_inp   = input.bool(true,  "Show Status Badge",       group=grp_quick)
+bool show_endlbls_inp  = input.bool(true,  "Show Endpoint Labels",    group=grp_quick)
+bool show_pivots_inp   = input.bool(true,  "Show Pivot Markers",      group=grp_quick)
+bool show_signals_inp  = input.bool(true,  "Show Signal Markers",     group=grp_quick)
+
+// === REPAINTING BEHAVIOR ===
+bool non_repaint_inp = input.bool(true, "Non-Repaint Mode",
+     group=grp_quick,
+     tooltip="ON: active channel and signals use closed-bar data only (no intra-bar flicker). OFF: live tick updates (responsive but jittery). Historical channels never repaint.")
+
+string lookback_mode_inp = input.string("Very Long", "Pivot Sensitivity",
+     options=["Short", "Medium", "Long", "Very Long"], group=grp_macro,
+     tooltip="Short = many short segments. Very Long = few clean trends. Use Very Long for premium chart look.")
+int    fixed_lookback_inp = input.int(20, "Custom Lookback (if enabled)",
+     minval=3, maxval=50, group=grp_macro)
+bool   use_custom_lb_inp  = input.bool(false, "Use Custom Lookback",
+     group=grp_macro)
+float  min_seg_atr_inp    = input.float(2.5, "Min Segment Size (× ATR)",
+     minval=0.0, maxval=10.0, step=0.1, group=grp_macro,
+     tooltip="Skip pivots that don't move price by at least this many ATRs. Higher = cleaner chart with fewer segments.")
+int    min_seg_bars_inp   = input.int(8, "Min Segment Length (bars)",
+     minval=2, maxval=50, group=grp_macro,
+     tooltip="Skip segments shorter than this many bars.")
+float  band_dev_mult_inp  = input.float(1.1, "Channel Width Multiplier",
+     minval=0.5, maxval=3.0, step=0.05, group=grp_macro,
+     tooltip="Multiplier on max bar deviation. 1.0 = price barely fits, 1.2+ = some breathing room.")
+float  min_band_atr_inp   = input.float(1.0, "Min Band Width (× ATR)",
+     minval=0.0, maxval=3.0, step=0.1, group=grp_macro,
+     tooltip="Minimum channel half-width as ATR multiple. Prevents razor-thin channels.")
+int    max_segments_inp   = input.int(15, "Max Segments Stored",
+     minval=3, maxval=50, group=grp_macro,
+     tooltip="Maximum historical segments to keep (older are removed FIFO)")
+
+int   micro_lr_len_inp  = input.int(20,    "Regression Length",
+     minval=10, maxval=100, group=grp_micro)
+float micro_dev_mult_inp = input.float(2.0, "Std Dev Multiplier",
+     minval=0.5, maxval=5.0, step=0.1, group=grp_micro)
+float micro_r2_min_inp   = input.float(0.20, "Min R² to Show",
+     minval=0.0, maxval=1.0, step=0.05, group=grp_micro,
+     tooltip="Hide Micro channel when fit quality is below this threshold")
+
+bool sig_segbreak_inp    = input.bool(true, "Segment Break Signals",  group=grp_signals,
+     tooltip="Price closes beyond active segment boundary")
+bool sig_pullback_inp    = input.bool(true, "Macro Pullback Signals", group=grp_signals,
+     tooltip="Price touches Macro band in segment direction")
+bool sig_microbreak_inp  = input.bool(true, "Micro Continuation",     group=grp_signals,
+     tooltip="Micro breakout aligned with Macro segment direction")
+int  signal_cooldown_inp = input.int(15, "Signal Cooldown (bars)",
+     minval=0, maxval=50, group=grp_signals,
+     tooltip="Minimum bars between consecutive same-type signals.")
+
+int  line_width_inp      = input.int(2, "Line Width (Core)",  minval=1, maxval=4, group=grp_visual)
+bool show_fill_inp       = input.bool(true, "Show Channel Fills", group=grp_visual)
+bool show_basis_inp      = input.bool(true, "Show Basis (dashed center)", group=grp_visual)
+bool show_mtf_inp        = input.bool(true, "Show MTF Mini-Screener", group=grp_visual)
+
+bool alert_segchange_inp = input.bool(false, "Alert on Segment Change",    group=grp_alerts)
+bool alert_segbreak_inp  = input.bool(false, "Alert on Segment Break",     group=grp_alerts)
+bool alert_microbreak_inp = input.bool(false, "Alert on Micro Continuation", group=grp_alerts)
+
+int GLOW_BONUS = 5
+int glow_width = line_width_inp + GLOW_BONUS
+
+// ============================================================================
+// SECTION 2 — MARKET DATA
+// ============================================================================
+
+float atr14 = ta.atr(14)
+float anchor_high_20 = ta.highest(high, 20)
+
+// Preset → simple int (required for ta.pivothigh leftbars/rightbars)
+int preset_lb = lookback_mode_inp == "Short" ? 5 : lookback_mode_inp == "Medium" ? 10 : lookback_mode_inp == "Long" ? 18 : 30
+int pivot_lb  = use_custom_lb_inp ? fixed_lookback_inp : preset_lb
+
+// ============================================================================
+// SECTION 3 — PIVOT DETECTION
+// ============================================================================
+
+float pivot_high_now = ta.pivothigh(high, pivot_lb, pivot_lb)
+float pivot_low_now  = ta.pivotlow(low,  pivot_lb, pivot_lb)
+
+bool new_ph = not na(pivot_high_now)
+bool new_pl = not na(pivot_low_now)
+
+// ============================================================================
+// SECTION 4 — SEGMENT MANAGEMENT
+//   A segment = bars between two consecutive pivots (HL→PH = up, PH→PL = down)
+//   For each segment we store:
+//     - start_bar / start_price / end_bar / end_price (pivot anchors)
+//     - slope / intercept (regression on bars in segment)
+//     - stdev (residual)
+//     - direction (1 = up, -1 = down)
+//     - drawing handles (lines, fill box, pivot label)
+// ============================================================================
+
+// Per-segment data parallel arrays (Pine v6 doesn't allow array<UDT> easily for graphics)
+var array<int>   seg_start_bar    = array.new<int>()
+var array<float> seg_start_price  = array.new<float>()
+var array<int>   seg_end_bar      = array.new<int>()
+var array<float> seg_end_price    = array.new<float>()
+var array<float> seg_slope        = array.new<float>()
+var array<float> seg_intercept    = array.new<float>()
+var array<float> seg_stdev        = array.new<float>()
+var array<int>   seg_direction    = array.new<int>()
+var array<float> seg_angle        = array.new<float>()
+
+// Drawing handles per segment — classic parallel channel: upper + lower (each glow + core)
+var array<line>  seg_upper_glow   = array.new<line>()
+var array<line>  seg_upper_core   = array.new<line>()
+var array<line>  seg_lower_glow   = array.new<line>()
+var array<line>  seg_lower_core   = array.new<line>()
+var array<line>  seg_basis        = array.new<line>()
+var array<linefill> seg_fill      = array.new<linefill>()
+var array<label> seg_pivot_lbl    = array.new<label>()
+
+// Last confirmed pivot for "open segment" tracking
+var int   last_pivot_bar    = na
+var float last_pivot_price  = na
+var int   last_pivot_type   = 0  // 1 = was PH, -1 = was PL
+
+// ----- Pivot-anchored segment metrics -----
+// Basis = straight line from start_pivot to end_pivot (forces clean joints between segments)
+// Width = max deviation of any bar in segment from basis line (+ ATR floor)
+// Returns [slope, intercept, max_deviation, angle_deg]
+//   basis(x) = intercept + slope * x   where x = position in segment from start
+f_segment_metrics(int start_bar_param, float start_price_param, int end_bar_param, float end_price_param) =>
+    int len = end_bar_param - start_bar_param + 1
+    float _slope = 0.0
+    float _intercept = start_price_param
+    float _maxdev = 0.0
+    float _angle = 0.0
+    if len >= 2
+        // Slope = (end - start) / bars_between
+        _slope := (end_price_param - start_price_param) / (end_bar_param - start_bar_param)
+        _intercept := start_price_param  // at x=0 (segment start), basis = start_price
+        // Find max deviation of bars in segment from basis line.
+        // SAMPLING: limit iterations to MAX_SAMPLES so we don't request beyond historical buffer.
+        // For very long segments we sample evenly instead of touching every bar.
+        int MAX_SAMPLES = 500
+        float maxdev_up = 0.0
+        float maxdev_dn = 0.0
+        int step = math.max(1, math.ceil(len / float(MAX_SAMPLES)))
+        for i = 0 to len - 1 by step
+            int bar_i = start_bar_param + i
+            int age   = bar_index - bar_i
+            // Guard: never request data beyond what Pine guarantees (max_bars_back minus headroom)
+            if age >= 0 and age < 4900
+                float yh = high[age]
+                float yl = low[age]
+                if not na(yh) and not na(yl)
+                    float x = i
+                    float basis_y = _intercept + _slope * x
+                    float dev_up = yh - basis_y
+                    float dev_dn = basis_y - yl
+                    if dev_up > maxdev_up
+                        maxdev_up := dev_up
+                    if dev_dn > maxdev_dn
+                        maxdev_dn := dev_dn
+        // Symmetric channel — take the larger side
+        _maxdev := math.max(maxdev_up, maxdev_dn)
+        // Angle in degrees — slope normalized by ATR
+        float slope_atr = atr14 > 0 ? _slope / atr14 : 0.0
+        _angle := math.atan(slope_atr) * 180.0 / math.pi
+    [_slope, _intercept, _maxdev, _angle]
+
+// ----- Build a new segment between two pivots -----
+// Pivot at bar (bar_index - pivot_lb) with given price is the new anchor.
+// Connect from `last_pivot_bar` to this new pivot.
+// Returns [new_last_bar, new_last_price, new_last_type] for caller to assign.
+// (Pine v6 forbids modifying var globals inside functions, so the caller updates state.)
+f_close_and_open_segment(int new_pivot_bar, float new_pivot_price, int new_pivot_type, int prev_last_bar, float prev_last_price, int prev_last_type) =>
+    // Only build a segment if we have a prior pivot of OPPOSITE type
+    bool eligible = not na(prev_last_bar) and prev_last_type != 0 and prev_last_type != new_pivot_type
+
+    // QUALITY FILTERS — skip noise
+    bool passes_filters = eligible
+    if eligible
+        int   bar_dist   = new_pivot_bar - prev_last_bar
+        float price_dist = math.abs(new_pivot_price - prev_last_price)
+        float atr_at_pivot = atr14
+        float min_dist_price = min_seg_atr_inp * atr_at_pivot
+        if bar_dist < min_seg_bars_inp
+            passes_filters := false
+        if price_dist < min_dist_price
+            passes_filters := false
+
+    // Return state — if filters fail, DON'T update last_pivot tracker
+    // (so next opposite pivot can still try to connect to the original anchor)
+    int   ret_bar   = passes_filters ? new_pivot_bar   : prev_last_bar
+    float ret_price = passes_filters ? new_pivot_price : prev_last_price
+    int   ret_type  = passes_filters ? new_pivot_type  : prev_last_type
+
+    if passes_filters
+        int s_bar    = prev_last_bar
+        float s_price = prev_last_price
+        int e_bar    = new_pivot_bar
+        float e_price = new_pivot_price
+        int dir = new_pivot_type
+
+        [_slope, _intercept, _maxdev, _angle] = f_segment_metrics(s_bar, s_price, e_bar, e_price)
+
+        array.push(seg_start_bar,   s_bar)
+        array.push(seg_start_price, s_price)
+        array.push(seg_end_bar,     e_bar)
+        array.push(seg_end_price,   e_price)
+        array.push(seg_slope,       _slope)
+        array.push(seg_intercept,   _intercept)
+        array.push(seg_stdev,       _maxdev)
+        array.push(seg_direction,   dir)
+        array.push(seg_angle,       _angle)
+        array.push(seg_upper_glow,  line(na))
+        array.push(seg_upper_core,  line(na))
+        array.push(seg_lower_glow,  line(na))
+        array.push(seg_lower_core,  line(na))
+        array.push(seg_basis,       line(na))
+        array.push(seg_fill,        linefill(na))
+        array.push(seg_pivot_lbl,   label(na))
+
+    // If filters fail and there was NO previous pivot, still record this one as starting point
+    if not passes_filters and na(prev_last_bar)
+        ret_bar   := new_pivot_bar
+        ret_price := new_pivot_price
+        ret_type  := new_pivot_type
+
+    [ret_bar, ret_price, ret_type]
+
+// On new pivot detection, close/open segment
+if new_ph
+    int ph_bar = bar_index - pivot_lb
+    [nb, np, nt] = f_close_and_open_segment(ph_bar, pivot_high_now, 1, last_pivot_bar, last_pivot_price, last_pivot_type)
+    last_pivot_bar   := nb
+    last_pivot_price := np
+    last_pivot_type  := nt
+
+if new_pl
+    int pl_bar = bar_index - pivot_lb
+    [nb, np, nt] = f_close_and_open_segment(pl_bar, pivot_low_now, -1, last_pivot_bar, last_pivot_price, last_pivot_type)
+    last_pivot_bar   := nb
+    last_pivot_price := np
+    last_pivot_type  := nt
+
+// FIFO trim — remove oldest segments if over limit
+while array.size(seg_start_bar) > max_segments_inp
+    array.shift(seg_start_bar)
+    array.shift(seg_start_price)
+    array.shift(seg_end_bar)
+    array.shift(seg_end_price)
+    array.shift(seg_slope)
+    array.shift(seg_intercept)
+    array.shift(seg_stdev)
+    array.shift(seg_direction)
+    array.shift(seg_angle)
+
+    line lu_g = array.shift(seg_upper_glow)
+    line lu_c = array.shift(seg_upper_core)
+    line ll_g = array.shift(seg_lower_glow)
+    line ll_c = array.shift(seg_lower_core)
+    line lb_  = array.shift(seg_basis)
+    linefill lf = array.shift(seg_fill)
+    label pl  = array.shift(seg_pivot_lbl)
+    if not na(lu_g)
+        line.delete(lu_g)
+    if not na(lu_c)
+        line.delete(lu_c)
+    if not na(ll_g)
+        line.delete(ll_g)
+    if not na(ll_c)
+        line.delete(ll_c)
+    if not na(lb_)
+        line.delete(lb_)
+    if not na(lf)
+        linefill.delete(lf)
+    if not na(pl)
+        label.delete(pl)
+
+// ============================================================================
+// SECTION 5 — ACTIVE SEGMENT (open, from last pivot to current bar)
+//   This is the "live" segment that's still forming — bright with glow
+// ============================================================================
+
+// Compute live regression for the in-progress segment
+var float active_slope     = 0.0
+var float active_intercept = 0.0
+var float active_stdev     = 0.0
+var float active_angle     = 0.0
+var int   active_dir       = 0
+var int   active_start_bar = na
+var float active_start_price = na
+
+if not na(last_pivot_bar) and bar_index > last_pivot_bar
+    // Active segment: anchor at last pivot, extend to current bar.
+    // In Non-Repaint Mode: use close[1] (closed previous bar) so the segment doesn't
+    // flicker tick-by-tick. Otherwise use live close.
+    float seg_end_price_input = non_repaint_inp ? nz(close[1], close) : close
+    int   seg_end_bar_input   = non_repaint_inp ? bar_index - 1       : bar_index
+    [_s, _i, _md, _a] = f_segment_metrics(last_pivot_bar, last_pivot_price, seg_end_bar_input, seg_end_price_input)
+    active_slope     := _s
+    active_intercept := _i
+    active_stdev     := _md
+    active_angle     := _a
+    active_dir := last_pivot_type == 1 ? -1 : last_pivot_type == -1 ? 1 : 0
+    active_start_bar   := last_pivot_bar
+    active_start_price := last_pivot_price
+
+bool have_active = not na(active_start_bar) and active_dir != 0
+
+// Active band values at current bar
+float active_upper_now = na
+float active_lower_now = na
+float active_basis_now = na
+if have_active
+    float x_now = bar_index - active_start_bar
+    active_basis_now := active_intercept + active_slope * x_now
+    // Use max-deviation directly (active_stdev now stores maxdev, not stdev)
+    float a_hw = math.max(active_stdev * band_dev_mult_inp, min_band_atr_inp * atr14)
+    active_upper_now := active_basis_now + a_hw
+    active_lower_now := active_basis_now - a_hw
+
+// ============================================================================
+// SECTION 6 — MICRO CHANNEL (25-bar regression, slides with price)
+// ============================================================================
+
+int   n_lr = micro_lr_len_inp
+float msum_x = 0.0
+float msum_y = 0.0
+float msum_xy = 0.0
+float msum_xx = 0.0
+float msum_yy = 0.0
+for i = 0 to n_lr - 1
+    float x = i
+    float y = close[i]
+    msum_x  := msum_x  + x
+    msum_y  := msum_y  + y
+    msum_xy := msum_xy + x * y
+    msum_xx := msum_xx + x * x
+    msum_yy := msum_yy + y * y
+
+float n_f      = n_lr
+float mean_mx  = msum_x / n_f
+float mean_my  = msum_y / n_f
+float denom_mx = msum_xx - n_f * mean_mx * mean_mx
+float slope_xy = denom_mx != 0 ? (msum_xy - n_f * mean_mx * mean_my) / denom_mx : 0.0
+float intercept_m = mean_my - slope_xy * mean_mx
+
+float micro_basis = intercept_m
+float micro_slope_raw = -slope_xy
+float micro_slope_atr = atr14 > 0 ? micro_slope_raw / atr14 : 0.0
+float micro_angle = math.atan(micro_slope_atr) * 180.0 / math.pi
+
+int micro_dir = micro_angle >  3.0 ? 1 : micro_angle < -3.0 ? -1 : 0
+
+float num_r   = n_f * msum_xy - msum_x * msum_y
+float den_r_x = n_f * msum_xx - msum_x * msum_x
+float den_r_y = n_f * msum_yy - msum_y * msum_y
+float den_r   = math.sqrt(den_r_x * den_r_y)
+float micro_r = den_r > 0 ? num_r / den_r : 0.0
+float micro_r2 = micro_r * micro_r
+
+float ss_tot_m = msum_yy - n_f * mean_my * mean_my
+float ss_res_m = math.max(0.0, ss_tot_m - slope_xy * (msum_xy - n_f * mean_mx * mean_my))
+float micro_stdev = n_lr > 2 ? math.sqrt(ss_res_m / (n_f - 2)) : 0.0
+
+float micro_upper = micro_basis + micro_stdev * micro_dev_mult_inp
+float micro_lower = micro_basis - micro_stdev * micro_dev_mult_inp
+float micro_width = micro_upper - micro_lower
+
+bool micro_visible = micro_r2 >= micro_r2_min_inp
+
+// ============================================================================
+// SECTION 7 — ALIGNMENT & CLASSIFICATION
+// ============================================================================
+
+bool macro_up   = active_dir ==  1
+bool macro_down = active_dir == -1
+bool macro_flat = active_dir ==  0
+bool muicro_up  = micro_dir ==  1
+bool muicro_dn  = micro_dir == -1
+bool muicro_fl  = micro_dir ==  0
+
+f_alignment(bool mu, bool md, bool xu, bool xd, bool xf) =>
+    mu and xu ? "Aligned Up" : md and xd ? "Aligned Down" : mu and xd ? "Pullback Down" : md and xu ? "Pullback Up" : "Building"
+
+string alignment = f_alignment(macro_up, macro_down, muicro_up, muicro_dn, muicro_fl)
+
+color align_color = alignment == "Aligned Up" ? C_MICRO_UP : alignment == "Aligned Down" ? C_MICRO_DN : alignment == "Pullback Down" ? C_AMBER : alignment == "Pullback Up" ? C_AMBER : C_DIM
+
+string align_symbol = alignment == "Aligned Up" ? "↗ ALIGNED UP" : alignment == "Aligned Down" ? "↘ ALIGNED DOWN" : alignment == "Pullback Down" ? "↘ PULLBACK" : alignment == "Pullback Up" ? "↗ PULLBACK" : "● BUILDING"
+
+// ============================================================================
+// SECTION 7B — PANEL HELPER FUNCTIONS (defined before first usage in Section 10)
+// ============================================================================
+
+f_dir_arrow(int d) =>
+    d == 1 ? "↗ Uptrend" : d == -1 ? "↘ Downtrend" : "⇆ Flat"
+
+f_chain_arrows() =>
+    int sz = array.size(seg_direction)
+    int show_n = math.min(sz, 6)
+    string s = ""
+    if show_n > 0
+        for k = sz - show_n to sz - 1
+            int d = array.get(seg_direction, k)
+            s := s + (d == 1 ? "↗" : "↘") + " "
+    if have_active
+        s := s + (active_dir == 1 ? "↗" : active_dir == -1 ? "↘" : "·") + "*"
+    s
+
+// Trend Bias: directional bias weighted by segment length × angle magnitude,
+// combined with NET PRICE MOVE over the analysis window.
+// Net move dominates choppy zigzag — if price moved $1000 down over 6 segments, bias is bearish
+// regardless of how many tiny up-segments existed.
+f_trend_bias() =>
+    int sz = array.size(seg_direction)
+    int look_n = math.min(sz, 6)
+    float up_weight = 0.0
+    float dn_weight = 0.0
+    float oldest_price = na
+    float newest_price = na
+    if look_n > 0
+        for k = sz - look_n to sz - 1
+            int   d   = array.get(seg_direction, k)
+            int   sb_ = array.get(seg_start_bar, k)
+            int   eb_ = array.get(seg_end_bar,   k)
+            float ang = array.get(seg_angle,     k)
+            float bars = eb_ - sb_
+            float w = bars * math.max(math.abs(ang), 1.0)
+            if d == 1
+                up_weight := up_weight + w
+            if d == -1
+                dn_weight := dn_weight + w
+            if k == sz - look_n
+                oldest_price := array.get(seg_start_price, k)
+            if k == sz - 1
+                newest_price := array.get(seg_end_price, k)
+    if have_active
+        float a_bars = bar_index - active_start_bar
+        float a_w = a_bars * math.max(math.abs(active_angle), 1.0)
+        if active_dir == 1
+            up_weight := up_weight + a_w
+        if active_dir == -1
+            dn_weight := dn_weight + a_w
+        newest_price := close
+        if na(oldest_price)
+            oldest_price := active_start_price
+
+    // Net move component (signed, in ATR units)
+    float net_move_atr = (not na(oldest_price) and not na(newest_price) and atr14 > 0) ? (newest_price - oldest_price) / atr14 : 0.0
+
+    float total = up_weight + dn_weight
+    string lbl = "Neutral"
+    color  col = C_DIM
+    if total > 0
+        float up_ratio = up_weight / total
+        // Combine: angle-weighted ratio + net move signal
+        // Strong net move (>3 ATR) overrides mixed ratio
+        if net_move_atr > 3.0 and up_ratio >= 0.40
+            lbl := "Strong Bull"
+            col := C_MACRO_UP
+        else if net_move_atr < -3.0 and up_ratio <= 0.60
+            lbl := "Strong Bear"
+            col := C_MACRO_DN
+        else if up_ratio >= 0.70
+            lbl := "Strong Bull"
+            col := C_MACRO_UP
+        else if up_ratio >= 0.55 or (net_move_atr > 1.5 and up_ratio >= 0.45)
+            lbl := "Bullish"
+            col := C_MACRO_UP
+        else if up_ratio <= 0.30
+            lbl := "Strong Bear"
+            col := C_MACRO_DN
+        else if up_ratio <= 0.45 or (net_move_atr < -1.5 and up_ratio <= 0.55)
+            lbl := "Bearish"
+            col := C_MACRO_DN
+        else
+            lbl := "Mixed"
+            col := C_AMBER
+    [lbl, col]
+
+// ============================================================================
+// SECTION 8 — SIGNALS
+// ============================================================================
+
+// Hoist ta.crossover/crossunder to top-level so they execute every bar (CW10002 fix).
+// These compute unconditional state — then we gate them downstream with macro direction.
+bool _xover_upper  = ta.crossover(close,  active_upper_now)
+bool _xunder_lower = ta.crossunder(close, active_lower_now)
+bool _xover_mic    = ta.crossover(close,  micro_upper)
+bool _xunder_mic   = ta.crossunder(close, micro_lower)
+
+// Segment break: close crosses active upper (if downtrend) or lower (if uptrend)
+bool segbreak_up   = have_active and macro_down and _xover_upper
+bool segbreak_down = have_active and macro_up   and _xunder_lower
+bool segbreak_signal = sig_segbreak_inp and (segbreak_up or segbreak_down)
+
+// Pullback: TRANSITION moment — close touches/penetrates band on THIS bar but didn't on previous
+// Long pullback: in uptrend, close drops to within 0.2 ATR of lower band but stays above basis
+bool _pb_long_state  = have_active and macro_up   and close <= active_lower_now + atr14 * 0.2 and close >= active_lower_now
+bool _pb_short_state = have_active and macro_down and close >= active_upper_now - atr14 * 0.2 and close <= active_upper_now
+bool pullback_long   = _pb_long_state  and not _pb_long_state[1]
+bool pullback_short  = _pb_short_state and not _pb_short_state[1]
+bool pullback_signal = sig_pullback_inp and (pullback_long or pullback_short)
+
+// Micro continuation: micro band breakout aligned with macro
+// CRITICAL: only fire in the EARLY part of the macro segment (first 50% of typical segment length).
+// Late-segment breakouts are usually exhaustion, not continuation.
+int bars_into_seg = have_active ? bar_index - active_start_bar : 0
+bool early_in_seg = have_active and bars_into_seg >= 3 and bars_into_seg <= 25
+bool micro_break_up   = _xover_mic
+bool micro_break_down = _xunder_mic
+bool cont_long  = macro_up   and micro_break_up   and micro_visible and early_in_seg
+bool cont_short = macro_down and micro_break_down and micro_visible and early_in_seg
+bool cont_signal = sig_microbreak_inp and (cont_long or cont_short)
+
+// ============================================================================
+// SECTION 9 — MTF
+// ============================================================================
+
+int chart_minutes = timeframe.in_seconds() / 60
+f_mtf_pair() =>
+    string t1 = "240"
+    string t2 = "1D"
+    if timeframe.isseconds
+        t1 := "5"
+        t2 := "60"
+    else if chart_minutes <= 1
+        t1 := "15"
+        t2 := "60"
+    else if chart_minutes <= 5
+        t1 := "60"
+        t2 := "240"
+    else if chart_minutes <= 15
+        t1 := "240"
+        t2 := "1D"
+    else if chart_minutes <= 60
+        t1 := "240"
+        t2 := "1D"
+    else if chart_minutes <= 240
+        t1 := "1D"
+        t2 := "1W"
+    else if timeframe.isdaily
+        t1 := "1W"
+        t2 := "1M"
+    else
+        t1 := "1M"
+        t2 := "3M"
+    [t1, t2]
+
+[mtf1_tf, mtf2_tf] = f_mtf_pair()
+
+f_get_mtf(string tf) =>
+    [_dir, _ang, _r2] = request.security(syminfo.tickerid, tf,
+         [active_dir[1], active_angle[1], micro_r2[1]],
+         lookahead=barmerge.lookahead_off)
+    [_dir, _ang, _r2]
+
+[mtf1_dir, mtf1_ang, mtf1_r2] = f_get_mtf(mtf1_tf)
+[mtf2_dir, mtf2_ang, mtf2_r2] = f_get_mtf(mtf2_tf)
+
+// ============================================================================
+// SECTION 10 — RENDERING: ALL SEGMENTS (rendered on barstate.islast)
+//   Pine v6 quirk: lines created on historical bars (inside `if new_ph` blocks)
+//   are tied to those bars and may be lost on rebuild. Safe approach:
+//   render the entire segment array fresh on the last bar each time.
+// ============================================================================
+
+if barstate.islast
+    // First — delete any previously rendered segment graphics
+    int existing = array.size(seg_upper_glow)
+    for k = 0 to existing - 1
+        line lu_g = array.get(seg_upper_glow, k)
+        line lu_c = array.get(seg_upper_core, k)
+        line ll_g = array.get(seg_lower_glow, k)
+        line ll_c = array.get(seg_lower_core, k)
+        line lb_  = array.get(seg_basis,      k)
+        linefill lf_ = array.get(seg_fill,    k)
+        label pl_ = array.get(seg_pivot_lbl,  k)
+        if not na(lu_g)
+            line.delete(lu_g)
+        if not na(lu_c)
+            line.delete(lu_c)
+        if not na(ll_g)
+            line.delete(ll_g)
+        if not na(ll_c)
+            line.delete(ll_c)
+        if not na(lb_)
+            line.delete(lb_)
+        if not na(lf_)
+            linefill.delete(lf_)
+        if not na(pl_)
+            label.delete(pl_)
+
+    // Now render every segment from scratch
+    int seg_count = array.size(seg_start_bar)
+    for idx = 0 to seg_count - 1
+        int   sb = array.get(seg_start_bar,   idx)
+        float sp = array.get(seg_start_price, idx)
+        int   eb = array.get(seg_end_bar,     idx)
+        float ep = array.get(seg_end_price,   idx)
+        float sl = array.get(seg_slope,       idx)
+        float ic = array.get(seg_intercept,   idx)
+        float sd = array.get(seg_stdev,       idx)
+        int   dr = array.get(seg_direction,   idx)
+
+        // x positions within segment local coords: 0 = start, len-1 = end
+        int seg_len = eb - sb
+        float start_basis = ic                       // basis value at start (x=0) — equals start pivot price
+        float end_basis   = ic + sl * seg_len        // basis value at end (x=seg_len)
+        // sd is max-deviation; apply width multiplier + ATR floor
+        float hw = math.max(sd * band_dev_mult_inp, min_band_atr_inp * atr14)
+
+        // Classic parallel channel: upper = basis + hw, lower = basis - hw, CONSTANT width
+        float start_upper = start_basis + hw
+        float start_lower = start_basis - hw
+        float end_upper   = end_basis   + hw
+        float end_lower   = end_basis   - hw
+
+        color seg_color = dr == 1 ? C_MACRO_UP : C_MACRO_DN
+
+        // Two parallel lines: upper (glow + core), lower (glow + core)
+        line lu_glow = show_macro_inp ? line.new(sb, start_upper, eb, end_upper,
+             color=color.new(seg_color, 60), width=line_width_inp + 2) : na
+        line lu_core = show_macro_inp ? line.new(sb, start_upper, eb, end_upper,
+             color=color.new(seg_color, 20), width=line_width_inp) : na
+        line ll_glow = show_macro_inp ? line.new(sb, start_lower, eb, end_lower,
+             color=color.new(seg_color, 60), width=line_width_inp + 2) : na
+        line ll_core = show_macro_inp ? line.new(sb, start_lower, eb, end_lower,
+             color=color.new(seg_color, 20), width=line_width_inp) : na
+
+        // Basis line (dashed center)
+        line lb_b = na
+        if show_macro_inp and show_basis_inp
+            lb_b := line.new(sb, start_basis, eb, end_basis,
+                 color=color.new(seg_color, 50), width=1, style=line.style_dashed)
+
+        // Channel fill — between upper and lower core lines
+        linefill lf = na
+        if show_macro_inp and show_fill_inp and not na(lu_core) and not na(ll_core)
+            lf := linefill.new(lu_core, ll_core, color=color.new(seg_color, 88))
+
+        label plb = na
+        if show_pivots_inp
+            // High pivot: label sits ABOVE pivot, arrow points DOWN to it (▼)
+            // Low pivot: label sits BELOW pivot, arrow points UP to it (▲)
+            // The label SHAPE acts as the pointer, the TEXT shows which pivot we're at as H/L
+            plb := label.new(eb, ep,
+                 dr == 1 ? "H" : "L",
+                 style=dr == 1 ? label.style_label_down : label.style_label_up,
+                 color=color.new(seg_color, 25),
+                 textcolor=C_WHITE,
+                 size=size.tiny)
+
+        array.set(seg_upper_glow, idx, lu_glow)
+        array.set(seg_upper_core, idx, lu_core)
+        array.set(seg_lower_glow, idx, ll_glow)
+        array.set(seg_lower_core, idx, ll_core)
+        array.set(seg_basis,      idx, lb_b)
+        array.set(seg_fill,       idx, lf)
+        array.set(seg_pivot_lbl,  idx, plb)
+
+// ============================================================================
+// SECTION 10B — ACTIVE SEGMENT RENDERING (last segment, redraw each bar)
+// ============================================================================
+
+var line active_upper_glow = na
+var line active_upper_core = na
+var line active_upper_glow_b = na
+var line active_upper_core_b = na
+var line active_lower_glow = na
+var line active_lower_core = na
+var line active_lower_glow_b = na
+var line active_lower_core_b = na
+var line active_basis_line = na
+var linefill active_fill   = na
+
+var line mic_upper_glow = na
+var line mic_upper_core = na
+var line mic_lower_glow = na
+var line mic_lower_core = na
+var line mic_basis_line = na
+var linefill mic_fill   = na
+
+var label   status_lbl   = na
+var label   mac_up_lbl   = na
+var label   mac_lo_lbl   = na
+var label   mic_up_lbl   = na
+var label   mic_lo_lbl   = na
+
+f_del_line(line ln) =>
+    if not na(ln)
+        line.delete(ln)
+    line(na)
+f_del_label(label lb) =>
+    if not na(lb)
+        label.delete(lb)
+    label(na)
+f_del_fill(linefill lf) =>
+    if not na(lf)
+        linefill.delete(lf)
+    linefill(na)
+
+if barstate.islast
+    // Cleanup
+    active_fill          := f_del_fill(active_fill)
+    mic_fill             := f_del_fill(mic_fill)
+    active_upper_glow    := f_del_line(active_upper_glow)
+    active_upper_core    := f_del_line(active_upper_core)
+    active_upper_glow_b  := f_del_line(active_upper_glow_b)
+    active_upper_core_b  := f_del_line(active_upper_core_b)
+    active_lower_glow    := f_del_line(active_lower_glow)
+    active_lower_core    := f_del_line(active_lower_core)
+    active_lower_glow_b  := f_del_line(active_lower_glow_b)
+    active_lower_core_b  := f_del_line(active_lower_core_b)
+    active_basis_line    := f_del_line(active_basis_line)
+    mic_upper_glow     := f_del_line(mic_upper_glow)
+    mic_upper_core     := f_del_line(mic_upper_core)
+    mic_lower_glow     := f_del_line(mic_lower_glow)
+    mic_lower_core     := f_del_line(mic_lower_core)
+    mic_basis_line     := f_del_line(mic_basis_line)
+    mac_up_lbl         := f_del_label(mac_up_lbl)
+    mac_lo_lbl         := f_del_label(mac_lo_lbl)
+    mic_up_lbl         := f_del_label(mic_up_lbl)
+    mic_lo_lbl         := f_del_label(mic_lo_lbl)
+    status_lbl         := f_del_label(status_lbl)
+
+    // --- Active Macro segment — parallel channel + dashed projection to the right ---
+    // Geometry: classic parallel lines from pivot to current bar, then dashed extension forward.
+    // Width is CONSTANT (same as historical segments).
+    if show_macro_inp and have_active
+        color a_color = active_dir == 1 ? C_MACRO_UP : C_MACRO_DN
+        float a_render_hw = math.max(active_stdev * band_dev_mult_inp, min_band_atr_inp * atr14)
+
+        // Band values at pivot (start)
+        float a_start_basis = active_intercept
+        float a_start_upper = a_start_basis + a_render_hw
+        float a_start_lower = a_start_basis - a_render_hw
+
+        // Band values at current bar (already computed: active_upper_now / active_lower_now)
+        // Project forward 20 bars
+        int   proj_bars  = 20
+        int   proj_end_x = bar_index + proj_bars
+        float proj_basis = active_intercept + active_slope * (proj_end_x - active_start_bar)
+        float proj_upper = proj_basis + a_render_hw
+        float proj_lower = proj_basis - a_render_hw
+
+        // SOLID portion: pivot → current bar
+        active_upper_glow := line.new(active_start_bar, a_start_upper, bar_index, active_upper_now,
+             color=color.new(a_color, 50), width=glow_width)
+        active_upper_core := line.new(active_start_bar, a_start_upper, bar_index, active_upper_now,
+             color=color.new(a_color, 0), width=line_width_inp)
+        active_lower_glow := line.new(active_start_bar, a_start_lower, bar_index, active_lower_now,
+             color=color.new(a_color, 50), width=glow_width)
+        active_lower_core := line.new(active_start_bar, a_start_lower, bar_index, active_lower_now,
+             color=color.new(a_color, 0), width=line_width_inp)
+
+        // DASHED projection: current bar → +20 bars right
+        active_upper_glow_b := line.new(bar_index, active_upper_now, proj_end_x, proj_upper,
+             color=color.new(a_color, 70), width=line_width_inp, style=line.style_dashed)
+        active_upper_core_b := line.new(bar_index, active_upper_now, proj_end_x, proj_upper,
+             color=color.new(a_color, 40), width=line_width_inp, style=line.style_dashed)
+        active_lower_glow_b := line.new(bar_index, active_lower_now, proj_end_x, proj_lower,
+             color=color.new(a_color, 70), width=line_width_inp, style=line.style_dashed)
+        active_lower_core_b := line.new(bar_index, active_lower_now, proj_end_x, proj_lower,
+             color=color.new(a_color, 40), width=line_width_inp, style=line.style_dashed)
+
+        // Basis (dashed) — pivot → current
+        if show_basis_inp
+            active_basis_line := line.new(active_start_bar, a_start_basis, bar_index, active_basis_now,
+                 color=color.new(a_color, 25), width=1, style=line.style_dashed)
+
+        // Fill — between solid upper/lower cores
+        if show_fill_inp
+            active_fill := linefill.new(active_upper_core, active_lower_core,
+                 color=color.new(a_color, 80))
+
+        // Endpoint labels (compact)
+        if show_endlbls_inp
+            mac_up_lbl := label.new(bar_index + 3, active_upper_now, "M↑",
+                 style=label.style_label_left,
+                 color=color.new(a_color, 20),
+                 textcolor=C_WHITE, size=size.tiny)
+            mac_lo_lbl := label.new(bar_index + 3, active_lower_now, "M↓",
+                 style=label.style_label_left,
+                 color=color.new(a_color, 50),
+                 textcolor=C_WHITE, size=size.tiny)
+
+    // --- Micro regression channel ---
+    if show_micro_inp and micro_visible
+        int   m_start_bar     = bar_index - (n_lr - 1)
+        float m_start_basis   = intercept_m + slope_xy * (n_lr - 1)
+        float m_start_upper   = m_start_basis + micro_stdev * micro_dev_mult_inp
+        float m_start_lower   = m_start_basis - micro_stdev * micro_dev_mult_inp
+
+        color m_color = micro_dir == 1 ? C_MICRO_UP : micro_dir == -1 ? C_MICRO_DN : C_DIM
+
+        mic_upper_glow := line.new(m_start_bar, m_start_upper, bar_index, micro_upper,
+             color=color.new(m_color, 50), width=glow_width)
+        mic_upper_core := line.new(m_start_bar, m_start_upper, bar_index, micro_upper,
+             color=color.new(m_color, 0), width=line_width_inp)
+        mic_lower_glow := line.new(m_start_bar, m_start_lower, bar_index, micro_lower,
+             color=color.new(m_color, 50), width=glow_width)
+        mic_lower_core := line.new(m_start_bar, m_start_lower, bar_index, micro_lower,
+             color=color.new(m_color, 0), width=line_width_inp)
+        if show_basis_inp
+            mic_basis_line := line.new(m_start_bar, m_start_basis, bar_index, micro_basis,
+                 color=color.new(m_color, 25), width=1, style=line.style_dashed)
+        if show_fill_inp
+            mic_fill := linefill.new(mic_upper_core, mic_lower_core,
+                 color=color.new(m_color, 82))
+
+        if show_endlbls_inp
+            mic_up_lbl := label.new(bar_index + 3, micro_upper, "m↑",
+                 style=label.style_label_left,
+                 color=color.new(m_color, 15),
+                 textcolor=C_WHITE, size=size.tiny)
+            mic_lo_lbl := label.new(bar_index + 3, micro_lower, "m↓",
+                 style=label.style_label_left,
+                 color=color.new(m_color, 45),
+                 textcolor=C_WHITE, size=size.tiny)
+
+    // --- Status badge — pinned higher to avoid right-edge label collision ---
+    if show_status_inp
+        [b_lbl, b_col] = f_trend_bias()
+        if b_lbl != "Neutral"
+            // Position above the high of last 20 bars + good gap so it doesn't overlap M↑/m↑ labels
+            float status_y = anchor_high_20 + atr14 * 3.0
+            int   status_x = bar_index + 25
+            string status_text = b_lbl == "Strong Bull" ? "↗↗ STRONG BULL" : b_lbl == "Bullish" ? "↗ BULLISH" : b_lbl == "Mixed" ? "⇆ MIXED" : b_lbl == "Bearish" ? "↘ BEARISH" : b_lbl == "Strong Bear" ? "↘↘ STRONG BEAR" : ""
+            status_lbl := label.new(status_x, status_y, status_text,
+                 style=label.style_label_left,
+                 color=color.new(b_col, 25),
+                 textcolor=C_WHITE,
+                 size=size.normal,
+                 textalign=text.align_left)
+
+// ============================================================================
+// SECTION 11 — SIGNAL MARKERS (with cooldown)
+// ============================================================================
+
+var array<label> sig_lbls = array.new<label>()
+int SIG_LIMIT = 15
+
+var int last_segbreak_bar = -10000
+var int last_pb_bar       = -10000
+var int last_cont_bar     = -10000
+
+bool segbreak_ready = signal_cooldown_inp == 0 or (bar_index - last_segbreak_bar) >= signal_cooldown_inp
+bool pb_ready       = signal_cooldown_inp == 0 or (bar_index - last_pb_bar)       >= signal_cooldown_inp
+bool cont_ready     = signal_cooldown_inp == 0 or (bar_index - last_cont_bar)     >= signal_cooldown_inp
+
+f_sig_push(label lb) =>
+    array.push(sig_lbls, lb)
+    if array.size(sig_lbls) > SIG_LIMIT
+        label oldest = array.shift(sig_lbls)
+        if not na(oldest)
+            label.delete(oldest)
+
+if show_signals_inp and segbreak_signal and barstate.isconfirmed and segbreak_ready
+    bool is_up = segbreak_up
+    float ly = is_up ? high + atr14 * 0.4 : low - atr14 * 0.4
+    label lb = label.new(bar_index, ly, is_up ? "BRK↑" : "BRK↓",
+         style=is_up ? label.style_label_down : label.style_label_up,
+         color=color.new(C_AMBER, 15),
+         textcolor=C_WHITE, size=size.small)
+    f_sig_push(lb)
+    last_segbreak_bar := bar_index
+
+if show_signals_inp and pullback_signal and barstate.isconfirmed and pb_ready
+    bool is_long = pullback_long
+    float ly = is_long ? low - atr14 * 0.4 : high + atr14 * 0.4
+    label lb = label.new(bar_index, ly, is_long ? "PB↑" : "PB↓",
+         style=is_long ? label.style_label_up : label.style_label_down,
+         color=color.new(C_AMBER, 20),
+         textcolor=C_WHITE, size=size.small)
+    f_sig_push(lb)
+    last_pb_bar := bar_index
+
+if show_signals_inp and cont_signal and barstate.isconfirmed and cont_ready
+    bool is_long = cont_long
+    float ly = is_long ? low - atr14 * 0.4 : high + atr14 * 0.4
+    color cc = is_long ? C_MICRO_UP : C_MICRO_DN
+    label lb = label.new(bar_index, ly, is_long ? "CONT↑" : "CONT↓",
+         style=is_long ? label.style_label_up : label.style_label_down,
+         color=color.new(cc, 20),
+         textcolor=C_WHITE, size=size.small)
+    f_sig_push(lb)
+    last_cont_bar := bar_index
+
+// ============================================================================
+// SECTION 12 — PANEL
+// ============================================================================
+
+var table panel = table.new(position.top_right, 2, 18, bgcolor=na, border_width=0)
+
+if show_panel_inp and barstate.islast
+    table.clear(panel, 0, 0, 1, 17)
+
+    [hdr_lbl, hdr_col] = f_trend_bias()
+    table.cell(panel, 0, 0, "ANCHORED CHANNELS",
+         text_color=C_WHITE, bgcolor=color.new(hdr_col, 25),
+         text_size=size.normal, text_halign=text.align_left)
+    table.cell(panel, 1, 0, syminfo.ticker,
+         text_color=C_WHITE, bgcolor=color.new(hdr_col, 25),
+         text_size=size.normal, text_halign=text.align_right)
+
+    [bias_lbl, bias_col] = f_trend_bias()
+    table.cell(panel, 0, 1, "Trend Bias",
+         text_color=C_LBL, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 1, bias_lbl + (alignment == "Building" ? "" : "  ·  " + alignment),
+         text_color=bias_col, bgcolor=P_ROW, text_size=size.normal, text_halign=text.align_right)
+
+    // === Macro ===
+    table.cell(panel, 0, 2, "MACRO · Active Segment",
+         text_color=C_WHITE, bgcolor=P_SEP, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 2, "", bgcolor=P_SEP)
+
+    string ang_str = have_active ? str.tostring(active_angle, "+#.#;-#.#") + "°" : "—"
+    color  ang_col = active_dir == 1 ? C_MACRO_UP : active_dir == -1 ? C_MACRO_DN : C_DIM
+    table.cell(panel, 0, 3, "Angle",
+         text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 3, ang_str,
+         text_color=ang_col, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(panel, 0, 4, "Direction",
+         text_color=C_LBL, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 4, f_dir_arrow(active_dir),
+         text_color=ang_col, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_right)
+
+    int bars_in_seg = have_active ? bar_index - active_start_bar : 0
+    table.cell(panel, 0, 5, "Bars in segment",
+         text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 5, str.tostring(bars_in_seg),
+         text_color=C_WHITE, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(panel, 0, 6, "Segment chain",
+         text_color=C_LBL, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 6, f_chain_arrows(),
+         text_color=C_WHITE, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_right)
+
+    // === Micro ===
+    table.cell(panel, 0, 7, "MICRO · " + str.tostring(micro_lr_len_inp) + "-bar regression",
+         text_color=C_WHITE, bgcolor=P_SEP, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 7, "", bgcolor=P_SEP)
+
+    string m_ang_str = micro_visible ? str.tostring(micro_angle, "+#.#;-#.#") + "°" : "— low fit"
+    color  m_ang_col = micro_dir == 1 ? C_MICRO_UP : micro_dir == -1 ? C_MICRO_DN : C_DIM
+    table.cell(panel, 0, 8, "Angle",
+         text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 8, m_ang_str,
+         text_color=m_ang_col, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(panel, 0, 9, "Direction",
+         text_color=C_LBL, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 9, micro_visible ? f_dir_arrow(micro_dir) : "-",
+         text_color=m_ang_col, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_right)
+
+    string r2q = micro_r2 >= 0.80 ? "high" : micro_r2 >= 0.50 ? "med" : micro_r2 >= 0.30 ? "low" : "noise"
+    color  r2c = micro_r2 >= 0.80 ? C_MICRO_UP : micro_r2 >= 0.50 ? C_WHITE : micro_r2 >= 0.30 ? C_AMBER : C_DIM
+    table.cell(panel, 0, 10, "R² fit",
+         text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 10, str.tostring(micro_r2, "0.00") + " " + r2q,
+         text_color=r2c, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+    // Acceleration: how much steeper/flatter is Micro vs Macro?
+    float accel = have_active and micro_visible ? micro_angle - active_angle : na
+    string accel_str = na(accel) ? "—" : str.tostring(accel, "+#.#;-#.#") + "° " + (math.abs(accel) < 2.0 ? "flat" : accel > 0 ? "faster" : "slower")
+    color accel_col = na(accel) ? C_DIM : math.abs(accel) < 2.0 ? C_DIM : accel > 0 ? C_MICRO_UP : C_AMBER
+    table.cell(panel, 0, 11, "Acceleration",
+         text_color=C_LBL, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 11, accel_str,
+         text_color=accel_col, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_right)
+
+    // === Signals ===
+    table.cell(panel, 0, 12, "SIGNALS",
+         text_color=C_WHITE, bgcolor=P_SEP, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 12, "", bgcolor=P_SEP)
+
+    string seg_state = not sig_segbreak_inp ? "off" : segbreak_up ? "▲ UP" : segbreak_down ? "▼ DOWN" : "— wait"
+    color  seg_col   = not sig_segbreak_inp ? C_DIM : (segbreak_up or segbreak_down) ? C_AMBER : C_DIM
+    table.cell(panel, 0, 13, "Segment break",
+         text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 13, seg_state,
+         text_color=seg_col, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+    string pb_state = not sig_pullback_inp ? "off" : pullback_long ? "▲ LONG" : pullback_short ? "▼ SHORT" : "— wait"
+    color  pb_col   = not sig_pullback_inp ? C_DIM : (pullback_long or pullback_short) ? C_AMBER : C_DIM
+    table.cell(panel, 0, 14, "Pullback",
+         text_color=C_LBL, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 14, pb_state,
+         text_color=pb_col, bgcolor=P_ROW, text_size=size.small, text_halign=text.align_right)
+
+    string ct_state = not sig_microbreak_inp ? "off" : cont_long ? "▲ LONG" : cont_short ? "▼ SHORT" : "— wait"
+    color  ct_col   = not sig_microbreak_inp ? C_DIM : cont_long ? C_MICRO_UP : cont_short ? C_MICRO_DN : C_DIM
+    table.cell(panel, 0, 15, "Continuation",
+         text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+    table.cell(panel, 1, 15, ct_state,
+         text_color=ct_col, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+    // === MTF ===
+    if show_mtf_inp
+        table.cell(panel, 0, 16, "MTF",
+             text_color=C_WHITE, bgcolor=P_SEP, text_size=size.small, text_halign=text.align_left)
+        table.cell(panel, 1, 16, "", bgcolor=P_SEP)
+
+        string mtf1_str = mtf1_dir == 1 ? "↗" : mtf1_dir == -1 ? "↘" : "·"
+        mtf1_str := mtf1_str + " " + str.tostring(mtf1_ang, "+#.#;-#.#") + "°"
+        color  mtf1_col = mtf1_dir == 1 ? C_MACRO_UP : mtf1_dir == -1 ? C_MACRO_DN : C_DIM
+        table.cell(panel, 0, 17, mtf1_tf + " / " + mtf2_tf,
+             text_color=C_LBL, bgcolor=P_BG, text_size=size.small, text_halign=text.align_left)
+        string mtf2_str = mtf2_dir == 1 ? "↗" : mtf2_dir == -1 ? "↘" : "·"
+        mtf2_str := mtf2_str + " " + str.tostring(mtf2_ang, "+#.#;-#.#") + "°"
+        table.cell(panel, 1, 17, mtf1_str + "  |  " + mtf2_str,
+             text_color=mtf1_col, bgcolor=P_BG, text_size=size.small, text_halign=text.align_right)
+
+// ============================================================================
+// SECTION 13 — ALERTS
+// ============================================================================
+
+bool segment_changed = barstate.isconfirmed and (active_dir != active_dir[1])
+
+alertcondition(segment_changed and alert_segchange_inp,
+     title="Segment Direction Changed",
+     message="Anchored Trend Channels: segment changed on {{ticker}} ({{interval}})")
+
+alertcondition(segbreak_signal and barstate.isconfirmed and alert_segbreak_inp,
+     title="Segment Break",
+     message="Anchored Trend Channels: segment break on {{ticker}} ({{interval}})")
+
+alertcondition(cont_signal and barstate.isconfirmed and alert_microbreak_inp,
+     title="Micro Continuation",
+     message="Anchored Trend Channels: micro continuation on {{ticker}} ({{interval}})")
+
+// ─── WEBHOOK ALERTS ───────────────────────────────────────────────────────────
+alertcondition((segbreak_up or pullback_long or cont_long) and barstate.isconfirmed, "Trend Channel BUY",
+     '{"action":"buy","source":"trend_channels","ticker":"{{ticker}}","tf":"{{interval}}","price":{{close}}}')
+alertcondition((segbreak_down or pullback_short or cont_short) and barstate.isconfirmed, "Trend Channel SELL",
+     '{"action":"sell","source":"trend_channels","ticker":"{{ticker}}","tf":"{{interval}}","price":{{close}}}')

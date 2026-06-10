@@ -1,0 +1,445 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+// ─────────────────────────────────────────────────────────────────────────────
+//@version=6
+indicator("Twiggs Liquidity & Order Block Engine [MarkitTick]", overlay=false, max_bars_back=500, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+i_len        = input.int  (21,    "TMF Period",         minval=1,  group="Calculation")
+i_sigLen     = input.int  (9,     "Signal Line Period", minval=1,  group="Calculation")
+i_showSig    = input.bool (true,  "Show Signal Line",              group="Calculation")
+i_overbought = input.float(0.20,  "Overbought Level",  step=0.01, group="Calculation")
+i_oversold   = input.float(-0.20, "Oversold Level",    step=0.01, group="Calculation")
+
+i_colBull     = input.color(color.new(#7B61FF, 0),  "Bullish / Rising",       group="Neon Colors")
+i_colBear     = input.color(color.new(#FF6B35, 0),  "Bearish / Falling",      group="Neon Colors")
+i_colSig      = input.color(color.new(#F0C040, 0),  "Signal Line",            group="Neon Colors")
+i_colOB       = input.color(color.new(#FF6B35, 25), "Overbought Line",        group="Neon Colors")
+i_colOS       = input.color(color.new(#00E5A0, 25), "Oversold Line",          group="Neon Colors")
+i_colZero     = input.color(color.new(#8888AA, 55), "Zero Line",              group="Neon Colors")
+i_colFillOB   = input.color(color.new(#FF6B35, 88), "Fill — Overbought Zone", group="Neon Colors")
+i_colFillOS   = input.color(color.new(#00E5A0, 88), "Fill — Oversold Zone",   group="Neon Colors")
+i_colHistBull = input.color(color.new(#7B61FF, 30), "Histogram — Bull",       group="Neon Colors")
+i_colHistBear = input.color(color.new(#FF6B35, 30), "Histogram — Bear",       group="Neon Colors")
+i_showCandles = input.bool (true,                   "Color Price Candles",    group="Neon Colors")
+
+i_alertCross = input.bool(true, "Alert: TMF crosses Zero",   group="Alerts")
+i_alertOBOS  = input.bool(true, "Alert: OB/OS Level Breach", group="Alerts")
+
+string GRP_DASH     = "📊 Dashboard Settings"
+color  dash_bg_color  = input.color(color.rgb(14, 10, 28, 5),    "Background Color", group=GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(200, 195, 230, 0), "Text Color",       group=GRP_DASH)
+
+string GRP_SMC      = "🏛 SMC — Market Structure & Order Blocks"
+bool   smc_show     = input.bool(true,  "Enable SMC Overlay",    group=GRP_SMC)
+int    smc_swing    = input.int (5,     "Swing Length",  minval=2, group=GRP_SMC)
+color  smc_col_bull = input.color(color.new(#7B61FF, 0),  "BOS/CHoCH Bull Color",   group=GRP_SMC)
+color  smc_col_bear = input.color(color.new(#FF6B35, 0),  "BOS/CHoCH Bear Color",   group=GRP_SMC)
+color  smc_col_ob_bull = input.color(color.new(#7B61FF, 88), "Bull OB Fill",        group=GRP_SMC)
+color  smc_col_ob_bear = input.color(color.new(#FF6B35, 88), "Bear OB Fill",        group=GRP_SMC)
+bool   smc_show_mit = input.bool(true,  "Track OB Mitigation",   group=GRP_SMC)
+bool   smc_hide_mit = input.bool(false, "Hide Mitigated OBs",    group=GRP_SMC)
+color  smc_col_mit  = input.color(color.new(#4A4A6A, 82), "Mitigated OB Color",    group=GRP_SMC)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Visual Helpers
+// ══════════════════════════════════════════════════════════════════════════════
+
+f_blockBar(float score) =>
+    int    n = math.min(math.max(math.round(score), 0), 10)
+    string s = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0, 229, 160) :
+     score >= 4.0 ? color.rgb(123, 97, 255) :
+     score >= 1.5 ? color.rgb(240, 192, 64) :
+     color.rgb(80, 75, 110)
+
+string clean_ticker = syminfo.tickerid
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TMF LOGIC ENGINE 
+// ══════════════════════════════════════════════════════════════════════════════
+
+float th = math.max(high, close[1])
+float tl = math.min(low,  close[1])
+float tr = th - tl
+
+float rawMult  = tr != 0.0 ? (2.0 * (close - tl) / tr) - 1.0 : 0.0
+float mfVol    = rawMult * volume
+
+float alpha    = 1.0 / i_len
+var float emaVol   = na
+var float emaMFVol = na
+emaVol   := na(emaVol)   ? volume : (1.0 - alpha) * emaVol   + alpha * volume
+emaMFVol := na(emaMFVol) ? mfVol  : (1.0 - alpha) * emaMFVol + alpha * mfVol
+
+float tmf = emaVol != 0.0 ? emaMFVol / emaVol : 0.0
+
+float alphaSig = 1.0 / i_sigLen
+var float emaSig = na
+emaSig := na(emaSig) ? tmf : (1.0 - alphaSig) * emaSig + alphaSig * tmf
+
+bool  rising  = tmf[1] > tmf[2]  
+
+bool crossUpZero = tmf[2] < 0.0          and tmf[1] >= 0.0
+bool crossDnZero = tmf[2] >= 0.0         and tmf[1] <  0.0
+bool crossUpOB   = tmf[2] < i_overbought and tmf[1] >= i_overbought
+bool crossDnOS   = tmf[2] > i_oversold   and tmf[1] <= i_oversold
+
+bool  sigBull     = tmf[1] >= emaSig[1]
+bool  gapWidening = math.abs(tmf[1] - emaSig[1]) > math.abs(tmf[2] - emaSig[2])
+
+var int barsSinceZero = 0
+barsSinceZero := (crossUpZero or crossDnZero) ? 0 : barsSinceZero + 1
+
+color histColorCalc = tmf >= 0.0
+     ? (rising ? i_colHistBull : color.new(i_colHistBull, 60))
+     : (rising ? color.new(i_colHistBear, 60) : i_colHistBear)
+
+color candleCol = i_showCandles
+     ? (sigBull
+         ? (gapWidening ? i_colBull : color.new(i_colBull, 60))
+         : (gapWidening ? i_colBear : color.new(i_colBear, 60)))
+     : na
+
+color tmfColor = rising ? i_colBull : i_colBear
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SMC ENGINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── UDTs ──────────────────────────────────────────────────────────────────────
+type SMCSwing
+    int   idx
+    float price
+    bool  active
+
+type SMCBlock
+    int   left
+    float top
+    float bottom
+    bool  is_bull
+    bool  mitigated
+    box   bx
+
+var SMCSwing          smc_ph    = SMCSwing.new(0, 0.0, false)
+var SMCSwing          smc_pl    = SMCSwing.new(0, 0.0, false)
+var int               smc_trend = 0
+var float             smc_last_high = 0.0
+var float             smc_last_low  = 0.0
+var array<SMCBlock>   smc_obs   = array.new<SMCBlock>()
+
+f_smcPH(series float src, simple int len) =>
+    float c = src[len]
+    bool  v = true
+    for i = 1 to len * 2
+        if i != len and src[i] >= c
+            v := false
+    v ? c : na
+
+f_smcPL(series float src, simple int len) =>
+    float c = src[len]
+    bool  v = true
+    for i = 1 to len * 2
+        if i != len and src[i] <= c
+            v := false
+    v ? c : na
+
+float smc_raw_ph = f_smcPH(high, smc_swing)
+float smc_raw_pl = f_smcPL(low,  smc_swing)
+
+float smc_atr = ta.atr(14)
+
+if not na(smc_raw_ph)
+    smc_ph.idx    := bar_index[smc_swing]
+    smc_ph.price  := smc_raw_ph
+    smc_ph.active := true
+
+if not na(smc_raw_pl)
+    smc_pl.idx    := bar_index[smc_swing]
+    smc_pl.price  := smc_raw_pl
+    smc_pl.active := true
+
+bool ms_bull_break = smc_ph.active and close[1] > smc_ph.price
+bool ms_bear_break = smc_pl.active and close[1] < smc_pl.price
+
+if smc_show and smc_show_mit
+    int _sz = array.size(smc_obs)
+    if _sz > 0
+        for i = 0 to _sz - 1
+            SMCBlock ob = array.get(smc_obs, i)
+            if not ob.mitigated
+                bool hit = ob.is_bull ? low[1] <= ob.bottom : high[1] >= ob.top
+                if hit
+                    ob.mitigated := true
+                    if smc_hide_mit
+                        box.delete(ob.bx)
+                    else
+                        box.set_bgcolor(ob.bx, smc_col_mit)
+                    array.set(smc_obs, i, ob)
+
+if array.size(smc_obs) > 40
+    SMCBlock evicted = array.shift(smc_obs)
+    box.delete(evicted.bx)
+
+if smc_show and ms_bull_break
+    string lbl_txt = smc_trend == 1 ? "BOS" : "CHoCH"
+    int    lx1     = math.max(smc_ph.idx, bar_index - 499)
+    int    mid_x   = math.round((lx1 + bar_index) / 2)
+
+    line.new(lx1, smc_ph.price, bar_index, smc_ph.price,
+         color=smc_col_bull, style=line.style_dashed, width=1,
+         force_overlay=true)
+    label.new(mid_x, smc_ph.price, lbl_txt,
+         color=color.new(color.white, 100), textcolor=smc_col_bull,
+         style=label.style_label_down, size=size.small,
+         force_overlay=true)
+
+    float ob_bottom = smc_pl.price
+    float ob_top    = smc_pl.price + (smc_atr * 0.5)
+    int   ob_left   = math.max(smc_pl.idx, bar_index - 499)
+    box ob_bx = box.new(ob_left, ob_top, bar_index + 10, ob_bottom,
+         border_color=na, bgcolor=smc_col_ob_bull,
+         force_overlay=true)
+    array.push(smc_obs, SMCBlock.new(ob_left, ob_top, ob_bottom, true, false, ob_bx))
+
+    smc_trend     := 1
+    smc_last_high := smc_ph.price
+    smc_ph.active := false
+
+if smc_show and ms_bear_break
+    string lbl_txt = smc_trend == -1 ? "BOS" : "CHoCH"
+    int    lx1     = math.max(smc_pl.idx, bar_index - 499)
+    int    mid_x   = math.round((lx1 + bar_index) / 2)
+
+    line.new(lx1, smc_pl.price, bar_index, smc_pl.price,
+         color=smc_col_bear, style=line.style_dashed, width=1,
+         force_overlay=true)
+    label.new(mid_x, smc_pl.price, lbl_txt,
+         color=color.new(color.white, 100), textcolor=smc_col_bear,
+         style=label.style_label_up, size=size.small,
+         force_overlay=true)
+
+    float ob_top    = smc_ph.price
+    float ob_bottom = smc_ph.price - (smc_atr * 0.5)
+    int   ob_left   = math.max(smc_ph.idx, bar_index - 499)
+    box ob_bx = box.new(ob_left, ob_top, bar_index + 10, ob_bottom,
+         border_color=na, bgcolor=smc_col_ob_bear,
+         force_overlay=true)
+    array.push(smc_obs, SMCBlock.new(ob_left, ob_top, ob_bottom, false, false, ob_bx))
+
+    smc_trend    := -1
+    smc_last_low := smc_pl.price
+    smc_pl.active := false
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════════
+
+float tmfScore   = (tmf + 1.0) / 2.0 * 10.0
+string tmfPrefix = tmf >= 0.0 ? '▲ ' : '▼ '
+string tmfBar    = tmfPrefix + f_blockBar(tmfScore) + '  ' + str.tostring(tmf, '#.###')
+color  tmfBarCol = tmf >= 0.0 ? color.rgb(0, 229, 160) : color.rgb(255, 107, 53)
+
+float  sigScore  = (emaSig + 1.0) / 2.0 * 10.0
+string sigPrefix = emaSig >= 0.0 ? '▲ ' : '▼ '
+string sigBar    = sigPrefix + f_blockBar(sigScore) + '  ' + str.tostring(emaSig, '#.###')
+color  sigBarCol = emaSig >= 0.0 ? color.rgb(123, 97, 255) : color.rgb(255, 107, 53)
+
+string sigStateStr = sigBull
+     ? (gapWidening ? '▲ Bull  ·  Expanding' : '▲ Bull  ·  Narrowing')
+     : (gapWidening ? '▼ Bear  ·  Expanding' : '▼ Bear  ·  Narrowing')
+color  sigStateCol = sigBull ? color.rgb(0, 229, 160) : color.rgb(255, 107, 53)
+
+string zeroRegimeStr = tmf >= 0.0
+     ? (tmf >= i_overbought ? '📈 Bull · Overbought' : '📈 Bull · Trending')
+     : (tmf <= i_oversold   ? '📉 Bear · Oversold'   : '📉 Bear · Trending')
+color  zeroRegimeCol = tmf >= 0.0 ? color.rgb(0, 229, 160) : color.rgb(255, 107, 53)
+
+float  gapRaw    = math.abs(tmf - emaSig)
+float  gapScore  = math.min(gapRaw / 0.5 * 10.0, 10.0)
+string gapPrefix = gapWidening ? '⚡ ' : '○  '
+string gapBar    = gapPrefix + f_blockBar(gapScore) + '  ' + str.tostring(gapRaw, '#.####')
+color  gapBarCol = f_blockColor(gapScore)
+
+string zoneStr = tmf > i_overbought  ? '⚠  Overbought Zone' :
+                 tmf < i_oversold    ? '⚠  Oversold Zone'   :
+                 tmf >= 0.0          ? '⚖  Neutral Bull'    :
+                                       '⚖  Neutral Bear'
+color  zoneCol = tmf > i_overbought  ? color.rgb(255, 107, 53)  :
+                 tmf < i_oversold    ? color.rgb(0, 229, 160)   :
+                 tmf >= 0.0          ? color.rgb(123, 97, 255)  :
+                                       color.rgb(255, 107, 53)
+
+string barsStr = '⏳ ' + str.tostring(barsSinceZero) + ' Bars'
+color  barsCol = color.rgb(150, 130, 255)
+
+string smcTrendStr = smc_trend == 1  ? '▲ Bullish Structure' :
+                     smc_trend == -1 ? '▼ Bearish Structure' :
+                                       '— Undefined'
+color  smcTrendCol = smc_trend == 1  ? color.rgb(0, 229, 160)  :
+                     smc_trend == -1 ? color.rgb(255, 107, 53) :
+                                       color.rgb(100, 90, 140)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Dashboard Table
+// ══════════════════════════════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 10,
+     border_width  = 1,
+     border_color  = color.rgb(80, 60, 120, 20),
+     frame_width   = 1,
+     frame_color   = color.rgb(100, 80, 160, 10),
+     force_overlay = true)
+
+color hdrBg = color.rgb(30, 20, 55, 10)
+color altBg = color.rgb(18, 14, 35, 10)
+color oddBg = dash_bg_color
+
+table.cell(dash, 0, 0, '  TMF · SMC Dashboard',
+     bgcolor=hdrBg, text_color=color.rgb(123, 97, 255, 0),
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 1, 0, clean_ticker + ' · ' + timeframe.period,
+     bgcolor=hdrBg, text_color=color.rgb(160, 145, 200, 0),
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 1, '  TMF Value',
+     bgcolor=altBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 1, tmfBar,
+     bgcolor=altBg, text_color=tmfBarCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 2, '  Signal Value',
+     bgcolor=oddBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 2, sigBar,
+     bgcolor=oddBg, text_color=sigBarCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 3, '  TMF vs Signal',
+     bgcolor=altBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 3, sigStateStr,
+     bgcolor=altBg, text_color=sigStateCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 4, '  Bias Regime',
+     bgcolor=oddBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 4, zeroRegimeStr,
+     bgcolor=oddBg, text_color=zeroRegimeCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 5, '  Momentum Gap',
+     bgcolor=altBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 5, gapBar,
+     bgcolor=altBg, text_color=gapBarCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 6, '  Zone Status',
+     bgcolor=oddBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 6, zoneStr,
+     bgcolor=oddBg, text_color=zoneCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 7, '  Zero Cross Age',
+     bgcolor=altBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 7, barsStr,
+     bgcolor=altBg, text_color=barsCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 8, '  Market Structure',
+     bgcolor=oddBg, text_color=dash_txt_color,
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 8, smcTrendStr,
+     bgcolor=oddBg, text_color=smcTrendCol,
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 9, '  © MarkitTick',
+     bgcolor=hdrBg, text_color=color.rgb(90, 70, 130, 0),
+     text_halign=text.align_left, text_font_family=font.family_monospace, text_size=size.tiny)
+table.cell(dash, 1, 9, 'Twiggs® v6 · SMC',
+     bgcolor=hdrBg, text_color=color.rgb(90, 70, 130, 0),
+     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+plotcandle(
+     i_showCandles ? open  : na,
+     i_showCandles ? high  : na,
+     i_showCandles ? low   : na,
+     i_showCandles ? close : na,
+     title         = "Price Candles",
+     color         = candleCol,
+     wickcolor     = candleCol,
+     bordercolor   = candleCol,
+     display       = display.pane + display.price_scale,
+     force_overlay = true)
+
+plot(tmf,     "TMF Histogram", color=histColorCalc, style=plot.style_columns, linewidth=1, display=display.pane)
+plot(tmf,     "TMF Glow",      color=color.new(tmfColor, 70), style=plot.style_line, linewidth=4, display=display.pane)
+plot(tmf,     "TMF Line",      color=tmfColor,                style=plot.style_line, linewidth=2, display=display.pane)
+plot(i_showSig ? emaSig : na, "Signal", color=i_colSig, style=plot.style_line, linewidth=1, linestyle=plot.linestyle_dotted, display=display.pane)
+
+hline(i_overbought, "Overbought", color=i_colOB,   linestyle=hline.style_dashed, linewidth=1)
+hline(i_oversold,   "Oversold",   color=i_colOS,   linestyle=hline.style_dashed, linewidth=1)
+hline(0.0,          "Zero",       color=i_colZero, linestyle=hline.style_solid,  linewidth=1)
+
+pOB  = plot(i_overbought, display=display.none)
+pOS  = plot(i_oversold,   display=display.none)
+pTMF = plot(tmf,          display=display.none)
+fill(pTMF, pOB, color = tmf > i_overbought ? i_colFillOB : na, title="OB Fill")
+fill(pTMF, pOS, color = tmf < i_oversold   ? i_colFillOS : na, title="OS Fill")
+
+plotshape(crossUpZero, title="Zero Cross Up",   style=shape.triangleup,   location=location.bottom, color=i_colBull, size=size.tiny, display=display.pane + display.price_scale)
+plotshape(crossDnZero, title="Zero Cross Down", style=shape.triangledown, location=location.top,    color=i_colBear, size=size.tiny, display=display.pane + display.price_scale)
+plotshape(crossUpOB,   title="OB Breach",       style=shape.circle,       location=location.top,    color=i_colOB,   size=size.tiny, display=display.pane + display.price_scale)
+plotshape(crossDnOS,   title="OS Breach",       style=shape.circle,       location=location.bottom, color=i_colOS,   size=size.tiny, display=display.pane + display.price_scale)
+
+plotshape(crossUpZero, title="Chart: Zero Cross Up",   style=shape.labelup,   text="↑ Bull", textcolor=color.black, location=location.belowbar, color=i_colBull, size=size.small, force_overlay=true, display=display.pane + display.price_scale)
+plotshape(crossDnZero, title="Chart: Zero Cross Down", style=shape.labeldown, text="↓ Bear", textcolor=color.white, location=location.abovebar, color=i_colBear, size=size.small, force_overlay=true, display=display.pane + display.price_scale)
+plotshape(crossUpOB,   title="Chart: OB Breach",       style=shape.labeldown, text="OB ⚠",  textcolor=color.white, location=location.abovebar, color=i_colOB,   size=size.small, force_overlay=true, display=display.pane + display.price_scale)
+plotshape(crossDnOS,   title="Chart: OS Breach",       style=shape.labelup,   text="OS ⚠",  textcolor=color.black, location=location.belowbar, color=i_colOS,   size=size.small, force_overlay=true, display=display.pane + display.price_scale)
+
+bgcolor(tmf > i_overbought ? color.new(i_colOB, 92) : na, title="BG OB")
+bgcolor(tmf < i_oversold   ? color.new(i_colOS, 92) : na, title="BG OS")
+bgcolor(tmf > i_overbought ? color.new(i_colOB, 92) : na, title="Chart BG OB", force_overlay=true)
+bgcolor(tmf < i_oversold   ? color.new(i_colOS, 92) : na, title="Chart BG OS", force_overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+
+if i_alertCross and barstate.isconfirmed
+    if crossUpZero
+        alert(str.format("TMF crossed ABOVE Zero — {0} [{1}]", syminfo.tickerid, timeframe.period), alert.freq_once_per_bar_close)
+    if crossDnZero
+        alert(str.format("TMF crossed BELOW Zero — {0} [{1}]", syminfo.tickerid, timeframe.period), alert.freq_once_per_bar_close)
+
+if i_alertOBOS and barstate.isconfirmed
+    if crossUpOB
+        alert(str.format("TMF breached OVERBOUGHT — {0} [{1}]", syminfo.tickerid, timeframe.period), alert.freq_once_per_bar_close)
+    if crossDnOS
+        alert(str.format("TMF breached OVERSOLD — {0} [{1}]", syminfo.tickerid, timeframe.period), alert.freq_once_per_bar_close)
+
+// ─── WEBHOOK ALERTS ───────────────────────────────────────────────────────────
+alertcondition(crossUpZero and barstate.isconfirmed, "Orderblock TMF BUY",
+     '{"action":"buy","source":"orderblock","ticker":"{{ticker}}","tf":"{{interval}}","price":{{close}}}')
+alertcondition(crossDnZero and barstate.isconfirmed, "Orderblock TMF SELL",
+     '{"action":"sell","source":"orderblock","ticker":"{{ticker}}","tf":"{{interval}}","price":{{close}}}')

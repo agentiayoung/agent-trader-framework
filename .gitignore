@@ -1,0 +1,62 @@
+# Agent Trader
+
+# Environment / secrets
+.env
+config/.env
+
+# Dependencies
+node_modules/
+skills/*/node_modules/
+skills/shared/*/node_modules/
+
+# Python (webhook listener)
+__pycache__/
+*.pyc
+.venv/
+tradingview/webhook/signals_test/
+
+# MCP tradingview-desktop — dépendance externe clonée (re-clone via README_MCP.md)
+tools/tradingview-mcp/
+
+# TradingView signals (runtime inbox — keep the dir, ignore the signals)
+workspaces/hyperliquid/signals/*.json
+workspaces/hyperliquid/signals/processed/*.json
+
+# Runtime data
+data/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Pine v6 reference repo (cloned external)
+tradingview/pine/pinescriptv6-ref/
+
+_local_signals/
+
+routines/logs/
+
+trade-journal/equity.json
+
+trade-journal/DASHBOARD.md
+
+# Pages timeline par trade (vues régénérées depuis trades.jsonl ; la donnée vit dans le JSONL)
+trade-journal/trades/
+
+# Heartbeat runtime (dead-man switch — état machine régénéré à chaque routine)
+routines/heartbeat.json
+
+# Snapshot public généré (scripts/export-public.js → repo public). Jamais commité ici.
+dist-public/
+
+# Snapshots de revalidation d'edge (piste 5 ; reproductibles via optimize.js, les flags vont sur Telegram)
+trade-journal/optimize-history/
+
+# Scripts/fichiers jetables (ne jamais committer; contournent les garde-fous)
+tmp_*
+*_tmp.js
+diag_*.js
+claudeverstradingview/

@@ -1,0 +1,7 @@
+{
+  "name": "tradingview-strategy",
+  "version": "1.0.0",
+  "description": "OpenClaw skill -- TradingView Pine v6 strategy generation, backtest diagnosis, strategy selection, and webhook alert config",
+  "main": "index.js",
+  "dependencies": {}
+}

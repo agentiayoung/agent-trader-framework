@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: offline test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install exchange skill deps
+        run: |
+          (cd skills/bybit && npm install --no-audit --no-fund)
+          (cd skills/shared/tradingview && npm install --no-audit --no-fund)
+
+      - name: Run offline test suite
+        run: bash tests/run-all.sh

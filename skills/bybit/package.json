@@ -1,0 +1,9 @@
+{
+  "name": "bybit-trading",
+  "version": "0.1.0",
+  "description": "OpenClaw skill -- Bybit V5 perpetuals trading via ccxt (demo trading by default). Scaled bracket: limit entry + SL + TP1/TP2/TP3.",
+  "main": "index.js",
+  "dependencies": {
+    "ccxt": "^4.4.0"
+  }
+}
