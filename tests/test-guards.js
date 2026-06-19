@@ -6,6 +6,11 @@ const { runGuards, setupFamily, rrToTp2 } = require("../trade-journal/guards.js"
 let passed = 0, failed = 0;
 function ok(name, cond) { if (cond) { passed++; console.log("  PASS  " + name); } else { failed++; console.log("  FAIL  " + name); } }
 
+// Determinisme : les cas non-demo (1-11) supposent DEMO_ACTIVE NON defini. On le retire de l'env
+// ambiant (sinon un shell avec DEMO_ACTIVE=1 fait passer les BLOCK en warn -> faux echecs). Les cas
+// DEMO (12-13) le posent explicitement.
+delete process.env.DEMO_ACTIVE;
+
 // ── setupFamily : parse STRICT par segment (ne confond pas S1 et S12) ──
 ok("famille MR8_MTF -> MR8", setupFamily("MR8_MTF") === "MR8");
 ok("famille S12_squeeze_break -> S12 (pas S1)", setupFamily("S12_squeeze_break") === "S12");
@@ -102,6 +107,25 @@ const onlyExp = runGuards(
   { only: ["exposure"] },
 );
 ok("opts.only exposure: 1 seul check, ALLOW", onlyExp.checks.length === 1 && onlyExp.ok === true);
+
+// ── 12) DEMO_ACTIVE : gates BLOQUANTS (breaker/quota) degrades en warn -> ok:true (le LLM tranche) ──
+const demoOrder = { symbol: "BTC", side: "long", setup: "S1_MTF", entry: 100, stop_loss: 96, take_profits: [{ px: 104 }, { px: 108 }] };
+const demoCtx = { atr: 3, equityState: { halt: true, reasons: ["dd 11%"], drawdown_pct: 11 }, todayCount: 9, exposure: { can_add_long: true, can_add_short: true } };
+const demoOn = runGuards(demoOrder, demoCtx, { demo: true });
+ok("DEMO: breaker+quota degrades -> ok:true", demoOn.ok === true && demoOn.demo_active === true);
+ok("DEMO: breaker en warning (pas block)", demoOn.warnings.some((w) => /breaker/.test(w)) && !demoOn.blocks.some((b) => /breaker/.test(b)));
+ok("DEMO: quota en warning", demoOn.warnings.some((w) => /daily-limit/.test(w)));
+// relaxed_guards : tracabilite des gates degrades en demo (separe metriques strict/relache, G10)
+ok("DEMO: relaxed_guards liste breaker+daily-limit", Array.isArray(demoOn.relaxed_guards) && demoOn.relaxed_guards.includes("breaker") && demoOn.relaxed_guards.includes("daily-limit"));
+const demoOff = runGuards(demoOrder, demoCtx, { demo: false });
+ok("hors DEMO: meme ctx -> BLOCK", demoOff.ok === false && demoOff.blocks.length >= 1);
+ok("hors DEMO: relaxed_guards vide", demoOff.relaxed_guards.length === 0);
+
+// ── 13) DEMO_ACTIVE ne leve PAS l'integrite : SL manquant / geometrie bloquent TOUJOURS ──
+const demoNoSl = runGuards({ symbol: "BTC", side: "long", setup: "S1_MTF", entry: 100, take_profits: [{ px: 106 }] }, demoCtx, { demo: true });
+ok("DEMO: SL manquant bloque TOUJOURS (integrite)", demoNoSl.ok === false && demoNoSl.blocks.some((b) => /sl-mandatory/.test(b)));
+const demoBadGeo = runGuards({ symbol: "BTC", side: "long", setup: "S1_MTF", entry: 100, stop_loss: 99.5, take_profits: [{ px: 104 }, { px: 108 }] }, demoCtx, { demo: true });
+ok("DEMO: geometrie SL trop serree bloque TOUJOURS", demoBadGeo.ok === false && demoBadGeo.blocks.some((b) => /sl-geometry/.test(b)));
 
 console.log(`\n  ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

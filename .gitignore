@@ -43,6 +43,12 @@ trade-journal/equity.json
 
 trade-journal/DASHBOARD.md
 
+# Portfolio live (vue Markdown régénérée à chaque routine ; source = journaux des 2 agents)
+PORTFOLIO.md
+
+# Cerveau graphify (graphe de code régénéré par le Stop hook ; artefact, pas source)
+graphify-out/
+
 # Pages timeline par trade (vues régénérées depuis trades.jsonl ; la donnée vit dans le JSONL)
 trade-journal/trades/
 
@@ -60,3 +66,15 @@ tmp_*
 *_tmp.js
 diag_*.js
 claudeverstradingview/
+
+# Cache du dernier scan (runtime, regenere a chaque scan.js) — lu par manage-check
+trade-journal/scan-latest.json
+
+# Journal de strategie de l'orchestrateur (runtime append-only, regenere par strategy-log)
+trade-journal/STRATEGY_LOG.md
+
+# Propositions BULL/BEAR du panel (scratch runtime, reecrites a chaque routine par les proposeurs)
+trade-journal/proposals/
+
+# Etat persistant du monitoring (runtime, regenere par monitor.js : last_managed_ts par position)
+trade-journal/monitor-state.json

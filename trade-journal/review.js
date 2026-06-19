@@ -8,9 +8,23 @@
 // transformer les boucles (score-eval/scorecard/notrade-eval) en décisions.
 // ═══════════════════════════════════════════════════════════════════
 
+// trendWinnerStats : mesure forward-test du chantier B (trail trend-adaptatif). Les setups de
+// TENDANCE (S1/S2/S3/S12) plafonnaient leurs gagnants au TP (~+1.46R moy, max +1.87R) ; le
+// trail-adaptatif vise +3R/+5R. Cette stat surveille le PLAFOND de R des trend-winners clos
+// dans le temps -> si le trail-adaptatif marche, max_r/avg_r doivent MONTER. PUR, testable.
+const TREND_SETUP_RE = /^(S1|S2|S3|S12)(?![A-Za-z0-9])/i;
+function trendWinnerStats(trades) {
+  const rs = (trades || [])
+    .filter((t) => t && t.status === "closed" && t.outcome === "win" && typeof t.r_multiple === "number" && TREND_SETUP_RE.test(String(t.strategy || "")))
+    .map((t) => t.r_multiple);
+  if (!rs.length) return { n: 0, avg_r: null, max_r: null };
+  return { n: rs.length, avg_r: +(rs.reduce((a, b) => a + b, 0) / rs.length).toFixed(2), max_r: +Math.max(...rs).toFixed(2) };
+}
+
 // Flags actionnables (pur). stats = cmd_stats(), scorecard = cmd_scorecard(),
-// scoreEval = evalScores(), slippage = analyzeSlippage() (optionnel). Retourne ✅/⚠️/ℹ️.
-function reviewFlags(stats, scorecard, scoreEval, slippage) {
+// scoreEval = evalScores(), slippage = analyzeSlippage() (optionnel), trades = load() (optionnel,
+// pour la mesure forward-test du trail trend-adaptatif). Retourne ✅/⚠️/ℹ️.
+function reviewFlags(stats, scorecard, scoreEval, slippage, trades) {
   const flags = [];
   // 1. Perf déclenchée
   if ((stats.trades || 0) >= 5) {
@@ -52,6 +66,16 @@ function reviewFlags(stats, scorecard, scoreEval, slippage) {
   } else if (slippage) {
     flags.push(`ℹ️ slippage n=${slippage.n} clôturés — friction live pas encore mesurable, laisser tourner`);
   }
+  // 6. Forward-test trail trend-adaptatif (chantier B) : plafond de R des trend-winners
+  if (trades) {
+    const tw = trendWinnerStats(trades);
+    if (tw.n >= 5) {
+      if (tw.max_r >= 3) flags.push(`✅ trend-winner a couru à ${tw.max_r}R (avg ${tw.avg_r}R, n${tw.n}) → le trail-adaptatif B capture les grandes tendances`);
+      else flags.push(`ℹ️ trend-winners plafonnent (max ${tw.max_r}R, avg ${tw.avg_r}R, n${tw.n}) → le trail-adaptatif B vise +3R/+5R, surveiller si le plafond monte en régime trending`);
+    } else {
+      flags.push(`ℹ️ trend-winners n=${tw.n} clôturés → trail-adaptatif B pas encore mesurable (besoin de tendances + de trades), laisser tourner`);
+    }
+  }
   return flags;
 }
 
@@ -73,4 +97,4 @@ function renderReview(s) {
   return md;
 }
 
-module.exports = { reviewFlags, renderReview };
+module.exports = { reviewFlags, renderReview, trendWinnerStats };

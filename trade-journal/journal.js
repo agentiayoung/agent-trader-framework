@@ -20,7 +20,7 @@ const path = require("path");
 
 const DIR = __dirname;
 const FILE = path.join(DIR, "trades.jsonl");
-const { enrichScore } = require("./score.js");
+const { enrichScore, perceptionScore } = require("./score.js");
 const { addSnapshot, renderTradePage, staleOpen } = require("./timeline.js");
 const { buildDigest, buildHeartbeat, isStale } = require("./digest.js");
 
@@ -95,6 +95,29 @@ function cmd_log(input) {
   }
   t.status = t.status || "open";
 
+  // ── Risque geometrique REEL (data-quality, bug DOGE 16.06 cote scalp, meme garde ici) ──
+  // risk_usd logge = BUDGET ; la geometrie reelle (size x |entry-SL|) peut diverger -> R-multiple
+  // fausse. Pour un trade arme SIMPLE, la GEOMETRIE fait foi. Laddered EXEMPTE (risk_usd = somme rungs,
+  // garde-fou essentiel cote agent qui ladder beaucoup). Budget conserve dans risk_budget + flag.
+  if (["open", "pending"].includes(t.status)) {
+    const rv = require("./risk-verify.js").verifyTradeRisk(t);
+    if (rv.geom_risk != null) {
+      if (rv.diverged) {
+        t.risk_budget = t.risk_usd;
+        t.risk_usd = rv.authoritative;
+        t.sizing_warn = rv.reason;
+        console.error("[journal] SIZING WARN " + (t.id || t.symbol) + " : " + rv.reason + " -> risk_usd corrige a " + rv.authoritative + " (R-multiple honnete).");
+      }
+      t.risk_usd_geom = rv.geom_risk;
+    }
+  }
+
+  // ORIGINE (contexte d'execution) : si non passee explicitement, la routine la stampe via
+  // $env:TRADE_ORIGIN (routine_auto / routine_manual, pose par run-routine.ps1) -> deterministe,
+  // pas a la charge du LLM. Hors routine (session conv avec Claude) l'env est absent -> reste vide
+  // et tradeOrigin() infere 'conv' depuis source:manual. Valeur libre toleree mais on borne au connu.
+  if (!t.origin && process.env.TRADE_ORIGIN) t.origin = process.env.TRADE_ORIGIN;
+
   // Collision d'id -> auto-suffixe b,c,d... (ne jamais ecraser ni jeter un log)
   if (trades.find((x) => x.id === t.id)) {
     const root = t.id.replace(/[a-z]$/, "");
@@ -110,11 +133,25 @@ function cmd_log(input) {
     const lv = {
       entry: t.score.entry ?? t.entry_actual ?? t.entry_planned ?? t.entry ?? (t.hypo && t.hypo.entry),
       sl: t.score.sl ?? t.stop_loss ?? (t.hypo && t.hypo.sl),
-      tp: t.score.tp ?? (Array.isArray(t.take_profits) && t.take_profits[0] ? t.take_profits[0].px : undefined) ?? (t.hypo && t.hypo.tp),
+      // R:R du tier = vers le TP le PLUS LOIN (cible finale) = coherent avec rrToTp2 des guards
+      // (angle mort corrige 18.06 : avant on prenait TP1 -> un ladder TP1@1R/TP2@2R sortait "sub" a tort).
+      tp: t.score.tp ?? (Array.isArray(t.take_profits) && t.take_profits.length ? t.take_profits[t.take_profits.length - 1].px : undefined) ?? (t.hypo && t.hypo.tp),
     };
     t.score = enrichScore(t.score, lv);
-  } else if (["open", "pending", "no_trade"].includes(t.status)) {
-    console.error("[journal] SANS SCORE: decision loggee sans score.components -> instrumentation /14 incomplete. Ajouter score:{components:{...},gate:{...},zones} (non bloquant).");
+  }
+
+  // ── Scoring PERCEPTION /14 (F1, 18.06) : source DETERMINISTE (dispo ~14/14 opps, contrairement au
+  // /14 Desktop souvent en fallback zones). Derive en PARALLELE de score Desktop (jamais a sa place)
+  // -> calibration propre via score-eval.by_perception. Aligne au sens du trade. La routine passe la
+  // perception compacte de l'opportunite (scan-latest) dans le champ `perception`.
+  if (t.perception && t.perception.confluence && !t.score_perception) {
+    const sp = perceptionScore(t.perception.confluence, t.side);
+    if (sp) t.score_perception = sp;
+  }
+
+  if (!(t.score && t.score.components) && ["open", "pending", "no_trade"].includes(t.status)) {
+    if (t.score_perception) console.error(`[journal] score Desktop absent -> scoring via PERCEPTION /14 (deterministe): ${t.score_perception.score14}/14 ${t.score_perception.tier}${t.score_perception.aligned === false ? " (CONTRE la confluence!)" : ""}.`);
+    else console.error("[journal] SANS SCORE: decision loggee sans score.components NI perception -> instrumentation /14 incomplete. Ajouter score:{components:{...},gate:{...},zones} ou perception:{confluence:{...}} (non bloquant).");
   }
 
   // ── Renforcement HYPO sur les no_trade (alimente notrade-eval) ──
@@ -129,9 +166,47 @@ function cmd_log(input) {
     }
   }
 
+  // ── Contexte d'analyse (tracabilite G8, audit 18.06) : snapshot du scan/marche au moment du trade ──
+  // Auto-capture DETERMINISTE depuis scan-latest.json (pas a la charge du LLM) -> un trade reste
+  // reconstructible (posture, candidats concurrents, options, cycle de la paire). Best-effort :
+  // ne bloque JAMAIS le log. Un entry_context fourni explicitement est preserve (non ecrase).
+  if (["open", "pending"].includes(t.status) && !t.entry_context) {
+    try { t.entry_context = require("./entry-context.js").loadEntryContext(t, DIR); } catch (e) { /* best-effort */ }
+  }
+
   trades.push(t);
   saveAll(trades);
   return { logged: t.id, status: t.status, ts_open: t.ts_open };
+}
+
+// ── roundPx : arrondi PRESERVANT la precision selon la magnitude ─────
+// Bug 12.06 (DOGE) : `.toFixed(2)` hardcode ecrasait entry_actual ET avg_exit
+// d'un alt sub-dollar (0.086 -> "0.09") -> entry==exit -> R price-based = 0.
+// Touche TOUT actif < 1 USD. On garde ~5 chiffres significatifs.
+function roundPx(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n === 0) return n;
+  const m = Math.abs(n);
+  const dec = m >= 1000 ? 2 : m >= 1 ? 4 : m >= 0.01 ? 6 : 8;
+  return +n.toFixed(dec);
+}
+
+// ── computeRMultiple : R d'un trade CLOS, robuste laddered + sub-dollar ──
+// PRIMAIRE = PnL realise (verite Bybit) / risque budgete (`risk_usd`). C'est le
+// R le plus fiable : insensible aux problemes d'avg entry/exit d'une entree
+// echelonnee (plusieurs rungs) et a l'arrondi de prix. Fallback = geometrie prix.
+// Pur + exporte (teste offline). Cf. bug DOGE 12.06 : entry==exit -> price-based=0
+// alors que realized_pnl -997.71 / risk 1034 = -0.96R.
+function computeRMultiple(t) {
+  if (t && Number.isFinite(t.risk_usd) && t.risk_usd > 0 && Number.isFinite(t.realized_pnl)) {
+    return +(t.realized_pnl / t.risk_usd).toFixed(2);
+  }
+  if (t && t.entry_actual && t.stop_loss && t.avg_exit) {
+    const risk = Math.abs(t.stop_loss - t.entry_actual);
+    const reward = t.side === "short" ? t.entry_actual - t.avg_exit : t.avg_exit - t.entry_actual;
+    if (risk) return +(reward / risk).toFixed(2);
+  }
+  return (t && typeof t.r_multiple === "number") ? t.r_multiple : null;
 }
 
 // ── close : finalise un trade (manuel ou via sync) ──────────────────
@@ -141,13 +216,75 @@ function cmd_close(input) {
   const t = trades.find((x) => x.id === u.id);
   if (!t) throw new Error("trade not found: " + u.id);
   Object.assign(t, u, { status: "closed" });
-  if (t.entry_actual && t.stop_loss && t.avg_exit) {
-    const risk = Math.abs(t.stop_loss - t.entry_actual);
-    const reward = t.side === "short" ? t.entry_actual - t.avg_exit : t.avg_exit - t.entry_actual;
-    if (risk) t.r_multiple = +(reward / risk).toFixed(2);
-  }
+  const r = computeRMultiple(t);
+  if (r != null) t.r_multiple = r;
   saveAll(trades);
   return { closed: t.id, net_pnl: t.net_pnl, r_multiple: t.r_multiple };
+}
+
+// ── manage-check : alertes deterministes de resserrement de SL ──────
+// Croise les positions actives avec le dernier scan (scan-latest.json) via le
+// module pur manage.js. A lancer APRES scan.js dans la routine. Surface les
+// shorts a risque de squeeze (divergence:bull pendant alt_capitulation, ou
+// at_cycle_low) -> resserrer le SL au lieu de garder le SL planifie (lecon DOGE 12.06).
+function cmd_manage_check() {
+  const scanPath = path.join(DIR, "scan-latest.json");
+  if (!fs.existsSync(scanPath)) return { error: "scan-latest.json absent -> lancer `node trade-journal/scan.js` d'abord", n: 0, alerts: [] };
+  const scan = JSON.parse(fs.readFileSync(scanPath, "utf8"));
+  const active = load().filter((t) => t.status === "open" || t.status === "pending");
+  const out = require("./manage.js").slTightenAlerts(active, scan.all, scan.market);
+  out.scan_ts = scan.ts || null;
+  out.note = out.n ? "Pour chaque OPEN flague -> RESSERRER le SL (trailing serre / breakeven+) ; pour un PENDING -> reconsiderer l'annulation. Lecon DOGE 12.06 (-0.96R)." : "Aucune position a risque de squeeze (pas de short avec divergence:bull/at_cycle_low).";
+  return out;
+}
+
+// ── thesis-check : PERCEPTION live "sante de these" par position tenue (15.06) ──
+// Generalise manage-check (tighten-only, short-only) en un verdict BIDIRECTIONNEL
+// hold|weakening|flipped (module pur thesis.js) en croisant les positions actives avec
+// le dernier scan persiste. flipped (>=2 signaux structurels CONTRE la position : trend
+// 4H flippe + meilleur setup du scan a l'oppose + reclaim EMA50d ...) = these cassee ->
+// take_partial + SL break-even ; weakening -> resserrer ; hold -> rien. A lancer APRES
+// scan.js, A LA PLACE de manage-check (le tighten est inclus). Le LLM AGIT (seuil dur de
+// cut total = P1 OOS). Repond a "voir le breakout XRP en live" (the maintainer 15.06).
+async function cmd_thesis_check() {
+  const scanPath = path.join(DIR, "scan-latest.json");
+  if (!fs.existsSync(scanPath)) return { error: "scan-latest.json absent -> lancer `node trade-journal/scan.js` d'abord", n: 0, positions: [] };
+  const scan = JSON.parse(fs.readFileSync(scanPath, "utf8"));
+  const active = load().filter((t) => t.status === "open" || t.status === "pending");
+  // TRAJECTOIRE (16.06) : fetch OHLCV-depuis-l'entree par position OPEN -> MFE/MAE/give-back/velocite
+  // (capte les pics de l'ANGLE MORT entre routines). Best-effort : tout echec -> trajById vide ->
+  // thesisHealth retombe sur son comportement instantane (retro-compatible). Observabilite, le LLM agit.
+  const trajById = {};
+  // PERCEPTION PROFONDE par position OPEN (F3, 18.06) : structure + ORDERFLOW (sweep/CVD/OI) -> alimente
+  // le signal SWEEP de flipSignals (la structure CHoCH/MSS vient deja, gratuite, du scan row). Best-effort
+  // par position : tout echec -> percById vide -> thesisHealth retombe sur la structure seule. Desactivable
+  // par THESIS_DEEP_PERCEPTION=0 (economie de fetch ; la structure CHoCH/MSS reste, elle).
+  const percById = {};
+  const deepOn = process.env.THESIS_DEEP_PERCEPTION !== "0";
+  try {
+    const { trajectory } = require("./trajectory.js");
+    const U = require("./universe.js");
+    const ccxt = require(require.resolve("ccxt", { paths: [path.join(DIR, "..", "skills", "bybit", "node_modules")] }));
+    const ex = new ccxt.bybit({ enableRateLimit: true, options: { defaultType: "swap" } });
+    const TF = process.env.TRAJ_TF || "1h"; // TF fine -> MFE/MAE granulaires (capte le pic intra-4h)
+    for (const t of active) {
+      if (t.status !== "open") continue;
+      const entry = Number(t.entry_actual ?? t.avg_entry ?? t.entry_planned);
+      const sl = Number(t.stop_loss);
+      const entryTs = Date.parse(t.ts_open || "");
+      if (Number.isFinite(entry) && Number.isFinite(sl) && Number.isFinite(entryTs)) {
+        let ccxtSym; try { const e = U.bySymbol(t.symbol); ccxtSym = (e && (e.ccxt || e.symbol)) || `${t.symbol}/USDT:USDT`; } catch (_) { ccxtSym = `${t.symbol}/USDT:USDT`; }
+        try {
+          const ohlcv = await ex.fetchOHLCV(ccxtSym, TF, entryTs, 300); // since = entree -> deja "depuis l'entree"
+          trajById[t.id] = trajectory({ side: t.side, entry, stop_loss: sl, ohlcvSinceEntry: ohlcv });
+        } catch (_) { /* best-effort par position */ }
+      }
+      if (deepOn) { try { const dp = await require("./perception.js").deepPerception(t.symbol, "4h"); if (dp && !dp.error) percById[t.id] = dp; } catch (_) { /* best-effort */ } }
+    }
+  } catch (_) { /* ccxt indispo -> pas de trajectoire/orderflow, thesis fonctionne quand meme */ }
+  const out = require("./thesis.js").thesisHealth(active, scan.all, scan.market, trajById, percById);
+  out.scan_ts = scan.ts || null;
+  return out;
 }
 
 // ── sync : auto-clôture des trades Bybit ouverts via closed PnL ──────
@@ -181,16 +318,17 @@ async function cmd_sync() {
     const pnl = matched.reduce((s, x) => s + Number(x.closedPnl), 0);
     const fees = matched.reduce((s, x) => s + Number(x.openFee || 0) + Number(x.closeFee || 0), 0);
     const qty = matched.reduce((s, x) => s + Number(x.qty), 0);
+    const avgEntry = matched.reduce((s, x) => s + Number(x.avgEntryPrice) * Number(x.qty), 0) / qty;
     const avgExit = matched.reduce((s, x) => s + Number(x.avgExitPrice) * Number(x.qty), 0) / qty;
     const lastTs = Math.max(...matched.map((x) => Number(x.updatedTime)));
-    const slHit = t.side === "short" ? avgExit >= t.entry_actual : avgExit <= t.entry_actual;
+    const slHit = t.side === "short" ? avgExit >= avgEntry : avgExit <= avgEntry;
 
     cmd_close({
       id: t.id, ts_close: new Date(lastTs).toISOString(),
-      entry_actual: +Number(matched[0].avgEntryPrice).toFixed(2),
-      avg_exit: +avgExit.toFixed(2), realized_pnl: +pnl.toFixed(4),
+      entry_actual: roundPx(avgEntry),     // moy ponderee (laddered) + precision sub-dollar (fix DOGE 12.06)
+      avg_exit: roundPx(avgExit), realized_pnl: +pnl.toFixed(4),
       fees: +fees.toFixed(4), net_pnl: +(pnl - fees).toFixed(4),
-      exits: matched.map((x) => ({ px: +Number(x.avgExitPrice).toFixed(2), qty: +x.qty, pnl: +Number(x.closedPnl).toFixed(4) }))
+      exits: matched.map((x) => ({ px: roundPx(x.avgExitPrice), qty: +x.qty, pnl: +Number(x.closedPnl).toFixed(4) }))
         .sort((a, b) => b.pnl - a.pnl),
       outcome: pnl > 0 ? "win" : "loss", exit_reason: slHit ? "stop_loss" : "take_profit",
     });
@@ -212,7 +350,7 @@ function cmd_set(input) {
     const lv = {
       entry: t.score.entry ?? t.entry_actual ?? t.entry_planned ?? t.entry ?? (t.hypo && t.hypo.entry),
       sl: t.score.sl ?? t.stop_loss ?? (t.hypo && t.hypo.sl),
-      tp: t.score.tp ?? (Array.isArray(t.take_profits) && t.take_profits[0] ? (t.take_profits[0].px ?? t.take_profits[0]) : undefined) ?? (t.hypo && t.hypo.tp),
+      tp: t.score.tp ?? (Array.isArray(t.take_profits) && t.take_profits.length ? (t.take_profits[t.take_profits.length - 1].px ?? t.take_profits[t.take_profits.length - 1]) : undefined) ?? (t.hypo && t.hypo.tp),
     };
     t.score = enrichScore(t.score, lv);
   }
@@ -237,6 +375,22 @@ function tradeTrack(t) {
   const key = String(t.strategy || t.setup || "");
   if (t.source === "manual" && !CATALOG_SETUP.test(key)) return "experiment"; // manuel hors catalogue
   return "production";                                                  // routine, ou manuel a setup valide
+}
+// ORIGINE (contexte d'EXECUTION, ORTHOGONAL au track) : distingue COMMENT le trade a ete pris,
+// pour un forward-test complet ou conv et routines sont COMPLEMENTAIRES (memes datas, splittables) :
+//  - conv           : execute par Claude DANS une conversation interactive (session dev, niveaux lus live)
+//  - routine_auto   : routine autonome planifiee (Task Scheduler -> claude -p)
+//  - routine_manual : routine declenchee a la main par the maintainer (run-routine.ps1 -Manual / ROUTINE-MANUELLE.bat)
+// Le TRACK decide si le trade COMPTE dans la perf (production) ; l'ORIGIN ne fait que SPLITTER l'analyse
+// (conv ET routine a setup catalogue restent TOUS dans production = LE MEME forward-test, jamais exclus).
+// Inference retroactive (avant le champ) : source:manual = conv (l'historique manuel = sessions conv
+// avec Claude : ASTER, HYPE, DOGE...) ; sinon routine_auto (le gros des trades = routines).
+const ORIGINS = ["conv", "routine_auto", "routine_manual"];
+function tradeOrigin(t) {
+  if (t.origin && ORIGINS.includes(t.origin)) return t.origin;          // explicite (passe au log)
+  if (t.origin) return t.origin;                                        // valeur libre toleree
+  if (t.source === "manual") return "conv";                            // heritage : manuel = session conv
+  return "routine_auto";                                               // heritage : le reste = routine
 }
 // Catégorise POURQUOI un pending a été annulé (jamais déclenché) — pour comprendre, SANS interférer
 // avec le WR (les annulés n'ont pas de net_pnl, ne sont jamais comptés dans la perf).
@@ -283,11 +437,27 @@ function cmd_stats() {
     b.avg_r = b.rs.length ? +(b.rs.reduce((a, c) => a + c, 0) / b.rs.length).toFixed(2) : null;
     b.net_pnl = +b.pnl.toFixed(2); delete b.rs; delete b.pnl;
   }
+  // SPLIT PAR ORIGINE (contexte d'execution, ORTHOGONAL au track) : conv vs routine_auto vs routine_manual
+  // -> verifie si les trades conv (curated, niveaux lus live) et les routines autonomes se comportent
+  // pareil (WR/avgR/PnL), SANS jamais exclure aucune cohorte. Les deux nourrissent LE MEME forward-test.
+  const byOrigin = {};
+  for (const t of all.filter((x) => ["closed", "open", "pending"].includes(x.status) && !isTestTrade(x))) {
+    const k = tradeOrigin(t); const b = (byOrigin[k] = byOrigin[k] || { closed: 0, wins: 0, pnl: 0, rs: [], live: 0 });
+    if (t.status === "closed") { b.closed++; if ((t.net_pnl ?? 0) > 0) b.wins++; b.pnl += t.net_pnl ?? 0; if (typeof t.r_multiple === "number") b.rs.push(t.r_multiple); }
+    else b.live++;
+  }
+  for (const k of Object.keys(byOrigin)) {
+    const b = byOrigin[k];
+    b.win_rate = b.closed ? +(b.wins / b.closed * 100).toFixed(1) : 0;
+    b.avg_r = b.rs.length ? +(b.rs.reduce((a, c) => a + c, 0) / b.rs.length).toFixed(2) : null;
+    b.net_pnl = +b.pnl.toFixed(2); delete b.rs; delete b.pnl;
+  }
   return {
     trades: n, open: all.filter((t) => t.status === "open").length,
     win_rate: n ? +(wins / n * 100).toFixed(1) : 0, net_pnl: +pnl.toFixed(2),
     avg_r: avgR != null ? +avgR.toFixed(2) : null, by_strategy: byStrat,
     by_track: byTrack, // labo demo : production (le juge) | experiment (forward-test, separe) | test
+    by_origin: byOrigin, // contexte d'exec : conv | routine_auto | routine_manual (complementaires, jamais exclus)
     tests_closed: testsClosed, // tests pipeline exclus de la perf ci-dessus
     // --- séparé de la perf : ne JAMAIS compter dans le WR ---
     triggered_def: "trades(closed)/win_rate = UNIQUEMENT les trades DÉCLENCHÉS (entrée remplie) clôturés gain/perte.",
@@ -333,7 +503,13 @@ function _equityState() {
   const dd = st.high_water && equity != null ? ((st.high_water - equity) / st.high_water) * 100 : null;
   const dailyLoss = parseFloat(process.env.RM_DAILY_LOSS_PCT || "5");
   const maxDd = parseFloat(process.env.RM_MAX_DRAWDOWN_PCT || "10");
-  const halt = (dayPnl != null && dayPnl < -dailyLoss) || (dd != null && dd > maxDd);
+  // DEMO_ACTIVE (approved) : en compte DEMO on peut aller AU-DELA de 10% de drawdown (objectif = trader
+  // activement pour tester l'infra). Le drawdown ne declenche PAS le halt en demo. L'anti-martingale
+  // (sizing.drawdownScale, taper a RM_MAX_DRAWDOWN_PCT) reste actif => la taille reduit toujours, ca
+  // ne STOPPE plus. Hors demo, le halt drawdown re-arme. La perte-jour garde sa logique (degradee en
+  // warning par guards.js en demo de toute facon).
+  const demoActive = process.env.DEMO_ACTIVE === "1";
+  const halt = (dayPnl != null && dayPnl < -dailyLoss) || (!demoActive && dd != null && dd > maxDd);
   return { equity, day_pnl_pct: dayPnl != null ? +dayPnl.toFixed(2) : null, drawdown_pct: dd != null ? +dd.toFixed(2) : null, halt };
 }
 function _gatherState() {
@@ -349,6 +525,7 @@ function _gatherState() {
     today_no_trades: trades.filter((t) => isToday(t) && t.status === "no_trade").length,
     stale_count: staleOpen(trades, today).length,
     score_eval_n: require("./score.js").evalScores(trades).n,
+    zones_fallback: require("./entry-context.js").zonesFallbackRate(trades, 7),
   };
 }
 function _ping(url) {
@@ -366,6 +543,17 @@ async function cmd_digest(arg) {
   let sent;
   if (arg === "send") { try { sent = await require("./notify.js")(text); } catch (e) { sent = false; } }
   return { digest: text, sent };
+}
+
+// portfolio : regenere PORTFOLIO.md (vue unifiee des 2 agents) + note Obsidian.
+// --json -> renvoie l'agregat brut (consomme par le dashboard web). Best-effort.
+function cmd_portfolio(arg) {
+  const pf = require("./portfolio.js");
+  if (arg === "json") return pf.buildLive();
+  pf.run([]);
+  const p = pf.buildLive();
+  return { ok: true, total_equity: p.aggregate.total_equity, total_closed: p.aggregate.total_closed,
+    combined_win_rate: p.aggregate.combined_win_rate, agents: p.agents.map((a) => a.name) };
 }
 
 // Charge config/.env dans process.env (loader zéro-dep du skill bybit — même
@@ -413,7 +601,18 @@ function cmd_heartbeat_check() {
 // le heartbeat -> ici on enregistre AUSSI "la routine a-t-elle reellement trade ?". health-check
 // alerte alors sur "vivant mais incomplet", pas seulement sur le silence total.
 function cmd_routine_status(input) {
-  const u = typeof input === "string" ? JSON.parse(input) : (input || {});
+  // Parse tolerant : PowerShell 5.1 peut manger les guillemets en passant le JSON inline
+  // a node.exe (node recevrait {complete:true} sans quotes -> JSON.parse echoue, last_status_ts
+  // se fige). On degrade proprement. Voir routines/run-routine.ps1 (echappement \").
+  let u = {};
+  if (typeof input === "string") {
+    try { u = JSON.parse(input); }
+    catch (e) {
+      u = { complete: !/complete["']?\s*:\s*false/i.test(input) };
+      const m = input.match(/reason["']?\s*:\s*["']?([^"'}]+)/i);
+      if (m) u.reason = m[1].trim();
+    }
+  } else { u = input || {}; }
   const f = path.join(DIR, "..", "routines", "heartbeat.json");
   let hb = {}; try { hb = JSON.parse(fs.readFileSync(f, "utf-8")); } catch (e) {}
   hb.last_complete = u.complete !== false;
@@ -457,16 +656,38 @@ function cmd_note(input) {
   return { id: t.id, snapshots: t.timeline.length, decision: snap.decision };
 }
 
+// ── strategy-log : auto-documentation du raisonnement de l'orchestrateur ──
+// Trace de DECISION (distincte de JOURNAL.md=trades, LESSONS.md=leçons, timeline=gestion).
+// Append-only dans STRATEGY_LOG.md : sentiment, bull/bear case, decision, pourquoi, ajustements.
+function cmd_strategy_log(input) {
+  const { buildEntry } = require("./strategy-log.js");
+  const u = typeof input === "string" ? JSON.parse(input) : (input || {});
+  const obj = {
+    date: u.date || sysDate(),                       // horloge système (discipline DATE) par défaut
+    time: u.time || sysDateTime().slice(11, 16),
+    sentiment: u.sentiment, bull_case: u.bull_case, bear_case: u.bear_case,
+    decision: u.decision, why: u.why, adjustments: u.adjustments,
+  };
+  const file = path.join(DIR, "STRATEGY_LOG.md");
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, "# Strategy Log — agent-trader\n\n> Trace de raisonnement de l'orchestrateur (sentiment, bull/bear, decision, pourquoi). Append-only.\n", "utf8");
+  }
+  fs.appendFileSync(file, buildEntry(obj), "utf8");
+  return { logged: true, date: obj.date, time: obj.time, decision: obj.decision || "no_trade", file: "trade-journal/STRATEGY_LOG.md" };
+}
+
 // ── score-eval : corrèle score/14, tier, composante, gate -> R réalisé ──
 function cmd_score_eval() {
-  const { evalScores } = require("./score.js");
+  const { evalScores, evalPerception } = require("./score.js");
   // PISTE PRODUCTION uniquement : le /14 a ete calibre sur les setups VALIDES. Les experiments
   // manuels (geometrie nouvelle) ont un /14->R different -> les inclure brouillerait la calibration.
   const all = load();
   const prod = all.filter((t) => tradeTrack(t) === "production");
   const nExp = all.filter((t) => tradeTrack(t) === "experiment" && t.status === "closed").length;
   const r = evalScores(prod);
-  return { ...r, _track: "production seulement", _experiments_exclus: nExp };
+  // by_perception : meme correlation mais sur le /14 PERCEPTION (deterministe, dispo ~14/14 opps).
+  const byPerception = evalPerception(prod);
+  return { ...r, by_perception: byPerception, _track: "production seulement", _experiments_exclus: nExp };
 }
 
 // ── slippage : friction live (slip d'entrée + frais) en R vs modèle backtest ──
@@ -495,7 +716,7 @@ async function cmd_review(arg) {
   const stats = cmd_stats(), scorecard = cmd_scorecard();
   const scoreEval = require("./score.js").evalScores(trades);
   const slippage = require("./slippage.js").analyzeSlippage(trades);
-  const flags = reviewFlags(stats, scorecard, scoreEval, slippage);
+  const flags = reviewFlags(stats, scorecard, scoreEval, slippage, trades);
   const markdown = renderReview({ date: sysDate(), stats, scorecard, scoreEval, slippage, flags });
   let sent;
   if (arg === "send") { try { sent = await require("./notify.js")(markdown); } catch (e) { sent = false; } }
@@ -531,13 +752,22 @@ async function cmd_risk() {
   const maxDdPct = parseFloat(process.env.RM_MAX_DRAWDOWN_PCT || "10");
   const dailyPnlPct = st.day_start ? ((equity - st.day_start) / st.day_start) * 100 : 0;
   const ddPct = st.high_water ? ((st.high_water - equity) / st.high_water) * 100 : 0;
-  const reasons = [];
+  // DEMO_ACTIVE (approved) : en DEMO on autorise le drawdown AU-DELA de 10% (trader activement pour
+  // tester l'infra) -> le drawdown ne declenche pas le halt en demo. L'anti-martingale (sizing) reste
+  // actif (la taille reduit toujours). Hors demo, le breaker drawdown re-arme normalement.
+  const demoActive = process.env.DEMO_ACTIVE === "1";
+  const reasons = [];   // => pilote halt (halt = reasons.length > 0)
+  const notes = [];     // observabilite, ne declenche PAS le halt
   if (dailyPnlPct < -dailyLossPct) reasons.push(`Perte jour ${dailyPnlPct.toFixed(2)}% > seuil -${dailyLossPct}%`);
-  if (ddPct > maxDdPct) reasons.push(`Drawdown ${ddPct.toFixed(2)}% > seuil ${maxDdPct}%`);
+  if (ddPct > maxDdPct) {
+    // En DEMO : le drawdown >10% est AUTORISE (note d'observabilite, pas un halt). Hors demo : halt.
+    if (demoActive) notes.push(`[DEMO] Drawdown ${ddPct.toFixed(2)}% > ${maxDdPct}% AUTORISE en demo (halt leve ; sizing anti-martingale toujours actif)`);
+    else reasons.push(`Drawdown ${ddPct.toFixed(2)}% > seuil ${maxDdPct}%`);
+  }
   return {
     equity, day_start: +st.day_start.toFixed(2), high_water: +st.high_water.toFixed(2),
     daily_pnl_pct: +dailyPnlPct.toFixed(2), drawdown_pct: +ddPct.toFixed(2),
-    halt: reasons.length > 0, reasons,
+    halt: reasons.length > 0, reasons, notes,
   };
 }
 
@@ -594,10 +824,85 @@ async function cmd_reconcile() {
   }
   const gl = Object.values(groups).map((g) => ({ ...g, avgExit: g.exitW / g.qty }));
 
-  const report = { updated: [], orphans: [], cancelled: [] };
+  const report = { updated: [], orphans: [], cancelled: [], ladder_folds: [], ladder_partials: [] };
   const usedG = new Set(), usedP = new Set();
 
+  // ── PRE-PASSE LADDERED (idempotente : RECOMPUTE depuis les fills Bybit, n'accumule pas) ──
+  // Un trade `entry_mode:laddered` fille ses rungs a des prix DIFFERENTS -> Bybit cree
+  // PLUSIEURS groupes closed-PnL. La boucle de matching exact (plus bas) n'en prendrait
+  // qu'UN et orphelinerait le reste en `reconcile_orphan` -> R fragmente (cf. TAO 13.06 :
+  // R1 +35.5 garde, R2/R3 -821 ejecte). Ici on RECLAME tous les groupes/la position d'un
+  // ladder par enveloppe de rungs et on (re)construit le parent. INVARIANT D'IDEMPOTENCE :
+  // on ne touche JAMAIS `entry_actual` (= l'ancre de l'enveloppe) ; l'entree melangee va
+  // dans `avg_entry`. Sinon l'enveloppe se decale a chaque passe et re-orphelinise les rungs bas.
+  const { aggregateGroups, claimLadderFills } = require("./reconcile-match.js");
+  const handledLadder = new Set();
   for (const t of load()) {
+    if (t.entry_mode !== "laddered" || !["open", "pending", "closed"].includes(t.status)) continue;
+    const { groupIdx, posIdx } = claimLadderFills(t, gl, positions, usedG, usedP);
+    if (!groupIdx.length && posIdx < 0) continue;   // pas encore fille -> la boucle gere le pending
+    groupIdx.forEach((i) => usedG.add(i));
+    if (posIdx >= 0) usedP.add(posIdx);
+    handledLadder.add(t.id);
+    const agg = groupIdx.length ? aggregateGroups(groupIdx.map((i) => gl[i])) : null;
+
+    if (posIdx >= 0) {
+      // position encore OUVERTE -> ladder EN COURS.
+      const p = positions[posIdx];
+      if (t.status !== "open" || Number(t.size) !== Number(p.contracts)) {
+        cmd_set({ id: t.id, status: "open", size: Number(p.contracts), avg_entry: roundPx(Number(p.entryPrice)) });
+        report.updated.push(`${t.id} -> open ${p.contracts}@${p.entryPrice} (ladder)`);
+      }
+      if (agg) {
+        // des rungs ont ete stoppes/pris pendant que la these reste OUVERTE -> realized
+        // PARTIEL attribue via une ligne enfant closed UPSERTEE (strategy du parent + parent_id
+        // + is_partial) : la somme realisee reste juste, plus de `reconcile_orphan` fantome.
+        const childId = `${t.id}-partial`;
+        const net = +(agg.pnl - agg.fees).toFixed(4);
+        const child = {
+          id: childId, status: "closed", strategy: t.strategy, parent_id: t.id, is_partial: true,
+          source: t.source || "bybit_reconcile", exchange: "bybit", mode: "demo",
+          symbol: baseSym(t.symbol), side: t.side, size: +agg.qty.toFixed(4),
+          entry_actual: roundPx(agg.entry), avg_exit: roundPx(agg.avgExit),
+          realized_pnl: +agg.pnl.toFixed(4), fees: +agg.fees.toFixed(4), net_pnl: net,
+          outcome: agg.pnl > 0 ? "win" : "loss", exit_reason: agg.pnl > 0 ? "take_profit" : "stop_loss",
+          ts_close: new Date(agg.lastTs).toISOString(),
+          review: `Rung(s) partiel(s) du ladder ${t.id} stoppes pendant que la these reste OUVERTE -> attribues (pas orphelin).`,
+        };
+        const exists = load().find((x) => x.id === childId);
+        if (!exists) { cmd_log({ ...child, allow_backdate: true, ts_open: new Date(agg.lastTs - 3600000).toISOString() }); report.ladder_partials.push(`${childId} net=${net}`); }
+        else if (Math.abs((exists.net_pnl ?? 0) - net) > 0.01) { cmd_set(child); report.ladder_partials.push(`${childId} net=${net} (maj)`); }
+      }
+      continue;
+    }
+
+    // pas de position -> ladder ENTIEREMENT CLOS : agrege tous ses groupes en UN trade clos.
+    // Caveat aging : Bybit demo ne garde ~7j de closed PnL. La cloture totale est captee
+    // par les 6 runs/j tant que les groupes sont frais -> agg complet. Si une cloture
+    // partielle vieillit hors fenetre AVANT la cloture totale, son PnL survit dans le
+    // child partiel (conserve tant que ses groupes sont visibles) ; ici on ne supprime le
+    // child que lorsque ses groupes sont re-agreges dans le parent (meme fenetre).
+    const net = +(agg.pnl - agg.fees).toFixed(4);
+    if (t.status !== "closed" || Math.abs((t.net_pnl ?? 0) - net) > 0.01) {
+      cmd_close({
+        id: t.id, avg_entry: roundPx(agg.entry), avg_exit: roundPx(agg.avgExit),
+        realized_pnl: +agg.pnl.toFixed(4), fees: +agg.fees.toFixed(4), net_pnl: net,
+        size: +agg.qty.toFixed(4), outcome: agg.pnl > 0 ? "win" : "loss",
+        exit_reason: agg.pnl > 0 ? "take_profit" : "stop_loss", ts_close: new Date(agg.lastTs).toISOString(),
+      });
+      report.ladder_folds.push(`${t.id} <- ${groupIdx.length} rung(s) -> net ${net}`);
+    }
+    // le child partiel (s'il existe) est desormais agrege dans le parent -> retirer pour
+    // ne pas double-compter (ses groupes sont dans `agg`, fenetre commune).
+    const childId = `${t.id}-partial`;
+    if (load().find((x) => x.id === childId)) {
+      saveAll(load().filter((x) => x.id !== childId));
+      report.ladder_folds.push(`${childId} retire (agrege dans ${t.id})`);
+    }
+  }
+
+  for (const t of load()) {
+    if (handledLadder.has(t.id)) continue;          // ladder deja traite par la pre-passe
     if (!["open", "pending", "closed"].includes(t.status)) continue;
     const ref = t.entry_actual ?? t.entry_planned;
     const pi = positions.findIndex((p, i) => !usedP.has(i) && baseSym(p.symbol) === baseSym(t.symbol) && p.side === t.side && matchPx(p.entryPrice, ref));
@@ -610,7 +915,7 @@ async function cmd_reconcile() {
     if (gi >= 0) {
       usedG.add(gi); const g = gl[gi]; const net = +(g.pnl - g.fees).toFixed(4);
       if (t.status !== "closed" || Math.abs((t.net_pnl ?? 0) - net) > 0.01) {
-        cmd_close({ id: t.id, entry_actual: +g.entry.toFixed(2), avg_exit: +g.avgExit.toFixed(2), realized_pnl: +g.pnl.toFixed(4), fees: +g.fees.toFixed(4), net_pnl: net, size: +g.qty.toFixed(4), outcome: g.pnl > 0 ? "win" : "loss", exit_reason: g.pnl > 0 ? "take_profit" : "stop_loss", ts_close: new Date(g.lastTs).toISOString() });
+        cmd_close({ id: t.id, entry_actual: roundPx(g.entry), avg_exit: roundPx(g.avgExit), realized_pnl: +g.pnl.toFixed(4), fees: +g.fees.toFixed(4), net_pnl: net, size: +g.qty.toFixed(4), outcome: g.pnl > 0 ? "win" : "loss", exit_reason: g.pnl > 0 ? "take_profit" : "stop_loss", ts_close: new Date(g.lastTs).toISOString() });
         report.updated.push(`${t.id} -> closed net=${net} (qty ${g.qty.toFixed(4)})`);
       }
       continue;
@@ -629,6 +934,8 @@ async function cmd_reconcile() {
   }
 
   // orphelins : groupes closed Bybit sans trade journal -> créer
+  // (les groupes appartenant a un ladder ont DEJA ete claimes par la pre-passe
+  //  laddered ci-dessus -> usedG : ils ne fragmentent plus en `reconcile_orphan`.)
   gl.forEach((g, i) => {
     if (usedG.has(i)) return;
     const net = +(g.pnl - g.fees).toFixed(4);
@@ -638,6 +945,7 @@ async function cmd_reconcile() {
     report.orphans.push(`${id} net=${net}`);
   });
   // orphelins : positions ouvertes Bybit sans trade journal
+  // (les positions appartenant a un ladder ont DEJA ete claimees par la pre-passe.)
   positions.forEach((p, i) => {
     if (usedP.has(i)) return;
     const id = `bybit-open-${baseSym(p.symbol)}-${Number(p.entryPrice).toFixed(0)}`.toLowerCase();
@@ -707,6 +1015,10 @@ function cmd_exposure() {
   // can_add = il reste de la place pour ARMER un pending (le live se borne par annulation dynamique au fill) :
   //   (1) total actif < maxActive ET (2) risque agrege du sens < cap% ET (3) risque TOTAL book < cap total%.
   const canAdd = (sideRiskVal) => activeN < maxActive && (sideRiskVal == null || sideRiskVal < maxSidePct) && (totalRisk == null || totalRisk < maxTotalPct);
+  // by_class : risque agrege par classe d'actif (crypto/commodity/etf/equity). Or & ETF sont
+  // DECORRELES de la crypto -> peuvent tourner en parallele sans le wash corr-0.70 same-side.
+  const U = require("./universe.js");
+  const byClass = U.classBreakdown(active, (t) => U.classOf(t.symbol), (t) => (equity ? tradeRiskUsd(t) / equity * 100 : 0));
   return {
     open_pending: activeN,
     live: { n: liveN, pairs: liveTrades.map((t) => t.symbol) },
@@ -715,6 +1027,7 @@ function cmd_exposure() {
     short: { n: shortN, pairs: bySide.short || [], risk_pct: shortRisk },
     cap_same_side: cap, max_live: maxLive, max_active: maxActive, max_side_risk_pct: maxSidePct, max_total_risk_pct: maxTotalPct,
     total_risk_pct: totalRisk,
+    by_class: byClass,
     live_full: liveN >= maxLive,
     can_add_long: canAdd(longRisk), can_add_short: canAdd(shortRisk),
     risk_warning: (longRisk != null && longRisk > maxSidePct) ? `LONG risque agrege ${longRisk}% > ${maxSidePct}% -> ne pas ajouter`
@@ -847,6 +1160,70 @@ async function cmd_verify_bracket(input) {
   const intended = { side, size: Number(u.size), stop_loss: Number(u.stop_loss), take_profits: u.take_profits || [] };
   const res = verifyBracket(intended, { position, slOrders, tpOrders });
   return { symbol: u.symbol, ...res, position, sl_orders: slOrders.length, tp_orders: tpOrders.length };
+}
+
+// ── monitor-tick (F3.3, 19.06) : MONITORING ENTRE LES ROUTINES (cadence ~20-30 min, sans LLM).
+// READ-ONLY : fetch positions + SL server-side -> needsAttention (NUE/STALE) + planMonitoring
+// (flipped/mature/set_trailing si scan-latest frais). ALERTE-ONLY par defaut (Telegram) : ferme
+// l'angle mort 4h (une position NUE est detectee en ~30 min au lieu de 4h). AUCUN ordre place
+// (MONITOR_TICK_AUTO non implemente = approved requis pour l'auto-execution). Persiste monitor-state.json.
+async function cmd_monitor_tick() {
+  const { planMonitoring, needsAttention, summarize, loadState, saveState } = require("./monitor.js");
+  const { classifyStops } = require("./bracket-check.js");
+  const bybitDir = path.join(DIR, "..", "skills", "bybit");
+  require(path.join(bybitDir, "index.js"));
+  const ccxt = require(require.resolve("ccxt", { paths: [bybitDir] }));
+  const c = new ccxt.bybit({ apiKey: process.env.BYBIT_API_KEY, secret: process.env.BYBIT_API_SECRET, enableRateLimit: true, options: { defaultType: "swap", recvWindow: 10000, adjustForTimeDifference: true } });
+  if (process.env.BYBIT_DEMO !== "0") c.enableDemoTrading(true);
+  await c.loadTimeDifference(); await c.loadMarkets();
+  const baseSym = (s) => String(s).toUpperCase().replace(/USDT.*$/, "").replace(/[^A-Z0-9]/g, "");
+  const live = (await c.fetchPositions()).filter((p) => Math.abs(Number(p.contracts || 0)) > 0);
+  const active = load().filter((t) => ["open", "pending"].includes(t.status));
+  const findActive = (sym, side) => active.find((t) => baseSym(t.symbol) === baseSym(sym) && t.side === side) || null;
+
+  const monPos = [];
+  for (const p of live) {
+    const sym = baseSym(p.symbol); const side = p.side === "short" ? "short" : "long";
+    const entry = Number(p.entryPrice || (p.info && p.info.avgPrice) || 0);
+    const mark = Number(p.markPrice || (p.info && p.info.markPrice) || 0);
+    let stops = [];
+    try { stops = await c.fetchOpenOrders(sym + "/USDT:USDT", undefined, undefined, { orderFilter: "StopOrder" }); } catch (e) {}
+    const norm = stops.map((o) => ({ trigger: Number(o.triggerPrice || (o.info && o.info.triggerPrice) || 0), amount: Number(o.amount || (o.info && o.info.qty) || 0), triggerDirection: Number((o.info && o.info.triggerDirection) || o.triggerDirection || 0) }));
+    const { slOrders } = classifyStops(norm, { side, entry, market: mark });
+    const t = findActive(sym, side);
+    monPos.push({ id: t ? t.id : sym, symbol: sym, side, status: "open", entry, entry_actual: entry, px: mark,
+      stop_loss: t ? t.stop_loss : null, take_profits: t ? t.take_profits : null, strategy: t ? t.strategy : null,
+      sl_orders: slOrders.length, has_sl: slOrders.length > 0 });
+  }
+
+  // verdicts thesis (flipped/mature/running) SI scan-latest frais (sinon keep -> jamais destructeur)
+  let verdicts = [];
+  try {
+    const scan = JSON.parse(fs.readFileSync(path.join(DIR, "scan-latest.json"), "utf8"));
+    const ageMin = scan.ts ? (Date.now() - Date.parse(scan.ts)) / 60000 : 1e9;
+    if (ageMin < (process.env.MONITOR_SCAN_MAX_AGE_MIN ? +process.env.MONITOR_SCAN_MAX_AGE_MIN : 360)) {
+      verdicts = require("./thesis.js").thesisHealth(monPos, scan.all || scan.opportunities || [], scan.market || {}).positions || [];
+    }
+  } catch (e) {}
+
+  const now = Date.now(); const state = loadState();
+  const att = needsAttention({ positions: monPos, state, now });
+  const res = planMonitoring({ verdicts, positions: monPos, state, now });
+  saveState(res.newState);
+
+  const actionable = res.plans.filter((pl) => ["place_sl", "take_partial_be", "take_partial_lock", "set_trailing"].includes(pl.action));
+  const lines = [];
+  if (res.criticals.length) lines.push("CRITIQUE position NUE (pas de SL): " + res.criticals.map((x) => x.symbol).join(", "));
+  if (res.stale.length) lines.push("STALE (non gere): " + res.stale.map((s) => s.symbol + " " + s.gap_h + "h").join(", "));
+  for (const pl of actionable) if (!res.criticals.find((x) => x.id === pl.id)) lines.push(pl.symbol + " " + pl.verdict + " -> " + pl.action);
+  const alert = att.alert || res.criticals.length > 0 || actionable.length > 0;
+  const summary = summarize(res);
+
+  let notified = false;
+  if (alert && process.env.MONITOR_TICK_NOTIFY !== "0") {
+    try { notified = !!(await require("./notify.js")("MONITOR-TICK (entre routines)\n" + lines.join("\n") + "\n" + summary)); } catch (e) {}
+  }
+  return { ok: true, n: monPos.length, alert, criticals: res.criticals, stale: res.stale, actionable: actionable.length, notified, summary, plans: res.plans, auto_exec: false };
 }
 
 // ── preflight : GATE DETERMINISTE pre-bracket (11.06, pattern OpenAlice/UTA) ──────
@@ -983,9 +1360,12 @@ function cmd_report() {
   return { report: "JOURNAL.md", trades: trades.length, pages };
 }
 
-// ── dispatcher ──────────────────────────────────────────────────────
+// ── exports (pour les tests offline ; n'affecte PAS le CLI) ─────────
+module.exports = { tradeTrack, tradeOrigin, isTestTrade, ORIGINS, CATALOG_SETUP, computeRMultiple, roundPx, cmd_manage_check };
+
+// ── dispatcher (CLI uniquement : ne tourne PAS quand le module est require()) ──
 const [, , cmd, arg] = process.argv;
-(async () => {
+if (require.main === module) (async () => {
   let out;
   if (cmd === "log") out = cmd_log(arg);
   else if (cmd === "set") out = cmd_set(arg);
@@ -998,6 +1378,8 @@ const [, , cmd, arg] = process.argv;
   else if (cmd === "trade") out = cmd_trade(arg);
   else if (cmd === "review") out = await cmd_review(arg);
   else if (cmd === "note") out = cmd_note(arg);
+  else if (cmd === "strategy-log") out = cmd_strategy_log(arg);
+  else if (cmd === "portfolio") out = cmd_portfolio(arg);
   else if (cmd === "digest") out = await cmd_digest(arg);
   else if (cmd === "heartbeat") out = await cmd_heartbeat();
   else if (cmd === "heartbeat-check") out = cmd_heartbeat_check();
@@ -1005,6 +1387,10 @@ const [, , cmd, arg] = process.argv;
   else if (cmd === "risk") out = await cmd_risk();
   else if (cmd === "reconcile") out = await cmd_reconcile();
   else if (cmd === "exposure") out = cmd_exposure();
+  else if (cmd === "manage-check") out = cmd_manage_check();
+  else if (cmd === "thesis-check") out = await cmd_thesis_check();
+  else if (cmd === "monitor-tick") out = await cmd_monitor_tick();
+  else if (cmd === "perception") out = await require("./perception.js").deepPerception(arg || "BTC", process.argv[5] || "4h"); // confluence profonde (avec orderflow) sur 1 candidat — OBSERVABILITE
   else if (cmd === "size") out = await cmd_size(arg);
   else if (cmd === "verify-bracket") out = await cmd_verify_bracket(arg);
   else if (cmd === "sl-check") out = await cmd_sl_check(arg);
@@ -1012,6 +1398,6 @@ const [, , cmd, arg] = process.argv;
   else if (cmd === "dashboard") out = cmd_dashboard();
   else if (cmd === "report") out = cmd_report();
   else if (cmd === "today" || cmd === "now") out = { date: sysDate(), time: sysDateTime().slice(11, 16), datetime: sysDateTime(), tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || "?"), note: "Date/heure systeme = source unique. Utiliser AVANT toute decision/log." };
-  else throw new Error("commandes: log | note | set | close | sync | reconcile | risk | exposure | size | verify-bracket | trade <id> | scorecard | score-eval | slippage | review | digest | heartbeat | heartbeat-check | stats | report | dashboard | today/now");
+  else throw new Error("commandes: log | note | strategy-log | set | close | sync | reconcile | risk | exposure | manage-check | thesis-check | perception <sym> | size | verify-bracket | trade <id> | scorecard | score-eval | slippage | review | digest | heartbeat | heartbeat-check | stats | report | dashboard | today/now");
   console.log(typeof out === "string" ? out : JSON.stringify(out, null, 2)); // brief = texte brut, le reste = JSON
 })().catch((e) => { console.error(e.message); process.exit(1); });

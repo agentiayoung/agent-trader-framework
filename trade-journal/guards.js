@@ -144,25 +144,45 @@ const GUARDS = [
 
 // runGuards : lance la chaine, agrege en verdict ALLOW/BLOCK. opts.only = sous-ensemble
 // de noms de guards (pour tester / pour un repositionnement qui ne ré-ajoute pas de risque).
+// Guards BLOQUANTS (gates qui EMPECHENT de trader) vs INTEGRITE (sl-mandatory/sl-geometry = data
+// propre). En DEMO_ACTIVE, les bloquants sont degrades en warn -> le LLM les VOIT mais TRANCHE
+// (approved 16.06 : en demo on trade activement pour tester/optimiser l'infra ; SL + geometrie +
+// sizing restent DURS, sinon la data est inexploitable = le but est justement de l'exploiter).
+const SOFT_GUARDS = new Set(["risk-reward", "breaker", "daily-limit", "exposure"]);
+
 function runGuards(order, ctx = {}, opts = {}) {
   const only = opts.only ? new Set(opts.only) : null;
+  const demo = opts.demo != null ? !!opts.demo : !!process.env.DEMO_ACTIVE;
   const checks = [];
   for (const g of GUARDS) {
     if (only && !only.has(g.name)) continue;
     let r;
     try { r = g.check(order, ctx) || pass(); }
     catch (e) { r = block(`erreur interne du guard: ${e && e.message}`); }
-    checks.push({ guard: g.name, ...r });
+    // DEMO_ACTIVE : un guard BLOQUANT (non-integrite) ne bloque plus -> warn (le LLM decide).
+    // On TAGGE le relachement (relaxed:true) -> les metriques peuvent separer "trade sous regles
+    // strictes" de "trade sous demo relache" (G10 audit 18.06, non bloquant, additif).
+    let relaxed = false;
+    if (demo && SOFT_GUARDS.has(g.name) && r.status === "block") {
+      r = warn(`[DEMO override] ${r.reason}`);
+      relaxed = true;
+    }
+    checks.push({ guard: g.name, ...r, relaxed });
   }
   const blocks = checks.filter((c) => c.status === "block");
   const warns = checks.filter((c) => c.status === "warn");
+  const relaxedGuards = checks.filter((c) => c.relaxed);
   return {
     ok: blocks.length === 0,
     verdict: blocks.length === 0 ? "ALLOW" : "BLOCK",
+    demo_active: demo,
     blocks: blocks.map((b) => `[${b.guard}] ${b.reason}`),
     warnings: warns.map((w) => `[${w.guard}] ${w.reason}`),
+    relaxed_guards: relaxedGuards.map((c) => c.guard),
     checks,
-    rule: "Gate deterministe pre-bracket : 1 seul BLOCK = ordre INTERDIT. Agrege les garde-fous NON negociables (SL obligatoire + geometrie validee + R:R tendance + breaker + quota/j + exposition agregee) en un point unique. Ne remplace AUCUN seuil (memes env vars, memes fonctions). Inspire du guard pipeline OpenAlice/UTA.",
+    rule: demo
+      ? "DEMO_ACTIVE : gates BLOQUANTS (R:R/breaker/quota/exposition) degrades en warn -> le LLM tranche. INTEGRITE (SL obligatoire + geometrie) reste DURE. But : trader activement pour optimiser l'infra avec une data propre."
+      : "Gate deterministe pre-bracket : 1 seul BLOCK = ordre INTERDIT. Agrege les garde-fous NON negociables (SL obligatoire + geometrie validee + R:R tendance + breaker + quota/j + exposition agregee) en un point unique. Ne remplace AUCUN seuil. Inspire du guard pipeline OpenAlice/UTA.",
   };
 }
 

@@ -38,6 +38,26 @@ if ($r.stale) {
   Log "OK (last=$($r.last), open=$($r.open), pending=$($r.pending), complete)"
 }
 
+# BACKSTOP MONITORING (16.06) : meme heartbeat OK, verifier que monitor.js a tourne recemment
+# QUAND des positions sont ouvertes (detecte un wiring monitor casse silencieusement). Lecture
+# SEULE de monitor-state.json (AUCUN reseau -> jamais de faux positif reseau). Best-effort.
+try {
+  $open = 0; try { $open = [int]$r.open } catch {}
+  if ($open -gt 0) {
+    $w = node "$proj\trade-journal\monitor.js" --watchdog | ConvertFrom-Json
+    $maxAgeMin = if ($env:MONITOR_MAX_AGE_H) { [double]$env:MONITOR_MAX_AGE_H * 60 } else { 300 }
+    $tracked = [int]$w.n_tracked
+    $ageOk = ($null -ne $w.freshest_age_min) -and ([double]$w.freshest_age_min -le $maxAgeMin)
+    if ($tracked -eq 0 -or -not $ageOk) {
+      $age = if ($null -ne $w.freshest_age_min) { "$($w.freshest_age_min) min" } else { "jamais" }
+      node "$proj\trade-journal\notify.js" "WARN monitoring: $open position(s) ouverte(s) mais monitor.js n'a pas tourne recemment (suivi: $tracked positions, dernier: $age). Verifier le wiring monitor dans la routine." | Out-Null
+      Log "MONITOR-WATCHDOG alerte (open=$open tracked=$tracked age=$($w.freshest_age_min))"
+    } else {
+      Log "monitor-watchdog OK (open=$open tracked=$tracked age=$($w.freshest_age_min) min)"
+    }
+  }
+} catch { Log "monitor-watchdog skip: $($_.Exception.Message)" }
+
 if ($Digest) {
   node "$proj\trade-journal\journal.js" digest send | Out-Null
   Log "digest envoye"

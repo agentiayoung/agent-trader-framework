@@ -53,22 +53,40 @@ function verifyBracket(intended, actual) {
   const sl = (actual && actual.slOrders) || [];
   const tp = (actual && actual.tpOrders) || [];
 
+  // LADDERED : une entree echelonnee fille ses rungs progressivement. La position
+  // OUVERTE = seulement les rungs deja remplis (< taille totale), mais le SL est
+  // dimensionne pour le LADDER COMPLET (les SL des rungs encore PENDING sont deja
+  // poses, reduceOnly). Un SL > position remplie n'est donc PAS un oversize : c'est
+  // la couverture pre-positionnee des rungs a venir. On compare alors le SL a la
+  // taille TOTALE visee (intended.size), pas a la position remplie (cf. faux positif
+  // "SL oversize" sur XRP/SUI laddered, audit 13.06).
+  const laddered = intended.entry_mode === "laddered";
+
   // 1. Position ouverte avec la bonne taille / le bon sens
   if (!pos || !pos.size) {
     add("warn", "aucune position ouverte (entrée non remplie -> pending, OU bracket non exécuté)");
   } else {
     if (pos.side && intended.side && pos.side !== intended.side) add("critical", `sens position ${pos.side} != intention ${intended.side}`);
     if (intended.size && Math.abs(pos.size - intended.size) / intended.size > TOL) {
-      add("warn", `taille réelle ${pos.size} != visée ${intended.size} (fill partiel) -> recalibrer SL/TP sur ${pos.size}`);
+      if (laddered && pos.size < intended.size) add("info", `ladder partiellement rempli : ${pos.size}/${intended.size} (rungs restants pending) -> normal`);
+      else add("warn", `taille réelle ${pos.size} != visée ${intended.size} (fill partiel) -> recalibrer SL/TP sur ${pos.size}`);
     }
   }
 
   // 2. Stop-loss : présent, taille = position réelle (sinon nu/oversize)
-  const refSize = pos && pos.size ? pos.size : intended.size;
+  // Pour un ladder, la reference HAUTE acceptable est la taille TOTALE (rungs pending
+  // pre-couverts) ; la reference BASSE reste la position remplie (en-dessous = expose).
   const slQty = sl.reduce((a, o) => a + (Number(o.amount) || 0), 0);
+  const filled = pos && pos.size ? pos.size : 0;
+  const refSize = filled || intended.size;
   if (!sl.length || slQty <= 0) {
     if (pos && pos.size) add("critical", "AUCUN stop-loss sur une position OUVERTE (position nue)");
     else add("warn", "pas de SL (normal si pending non rempli)");
+  } else if (laddered) {
+    const hi = intended.size || filled;
+    if (filled && slQty < filled * (1 - TOL)) add("critical", `SL couvre ${slQty} < position remplie ${filled} (UNDERSIZE -> portion remplie exposee)`);
+    else if (hi && slQty > hi * (1 + TOL)) add("critical", `SL couvre ${slQty} > ladder complet ${hi} (OVERSIZE reel -> risque inverse)`);
+    else if (filled && slQty > filled * (1 + TOL)) add("info", `SL ${slQty} > position remplie ${filled} mais <= ladder ${hi} : rungs pending pre-couverts -> normal`);
   } else if (refSize && Math.abs(slQty - refSize) / refSize > TOL) {
     add("critical", `SL couvre ${slQty} mais la position est ${refSize} (${slQty > refSize ? "OVERSIZE -> risque inverse au déclenchement" : "UNDERSIZE -> reste exposé"})`);
   }
@@ -78,7 +96,9 @@ function verifyBracket(intended, actual) {
   if (wantTp && tp.length < wantTp) add("warn", `${tp.length} TP posés vs ${wantTp} prévus (scale-out incomplet)`);
 
   const critical = issues.some((i) => i.level === "critical");
-  return { ok: issues.length === 0, critical, issues };
+  // `info` = note benigne (ladder partiel pre-couvert) -> n'invalide PAS le bracket.
+  const ok = !issues.some((i) => i.level === "critical" || i.level === "warn");
+  return { ok, critical, issues };
 }
 
 // findOrphanOrders(orders, positionSymbols, activeSymbols) -> [{ symbol, count }]

@@ -101,6 +101,25 @@ function round(n, d = 8) {
   return Math.round(n * f) / f;
 }
 
+// ── Marge ISOLEE par position (au lieu de cross) : risque cloisonne par symbole.
+// Pure : construit l'intention ; isBenign avale l'erreur idempotente Bybit (110026 deja isole).
+function _isolatedMarginCall(symbol, leverage) {
+  return { marginMode: "isolated", symbol, leverage };
+}
+_isolatedMarginCall.isBenign = (e) =>
+  /not modified|110026|leverage not modified|110043/i.test(String((e && e.message) || e));
+
+// Applique la marge isolee de facon idempotente (best-effort, ne casse pas le bracket si deja set).
+// Levier defaut 10 (env RM_ISO_LEVERAGE) = headroom de marge ; n'affecte PAS le R:R (geometrie TP/SL),
+// le SL (au plus 2xATR) saute TOUJOURS bien avant la liquidation (~10% a 10x).
+async function ensureIsolatedMargin(c, sym, leverage = +(process.env.RM_ISO_LEVERAGE || 10)) {
+  try {
+    await c.setMarginMode("isolated", sym, { leverage });
+  } catch (e) {
+    if (!_isolatedMarginCall.isBenign(e)) throw e; // vraie erreur -> remonte ; idempotent -> ignore
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // TOOLS — read-only
 // ═══════════════════════════════════════════════════════════════════
@@ -226,6 +245,7 @@ async function bybit_place_bracket_scaled({ symbol, side, amount, entry_px, stop
   // realistic vs the live market (long: SL below / TPs above current, and vice-versa).
   const c = await ensureReady();
   await c.loadMarkets();
+  await ensureIsolatedMargin(c, sym); // marge ISOLEE par position (idempotent), avant tout ordre
   const amt = (x) => c.amountToPrecision(sym, x);
   const pxp = (x) => c.priceToPrecision(sym, x);
 
@@ -322,6 +342,7 @@ async function bybit_place_limit_bracket({ symbol, side, amount, entry_px, stop_
 
   const c = await ensureReady();
   await c.loadMarkets();
+  await ensureIsolatedMargin(c, sym); // marge ISOLEE par position (idempotent), avant tout ordre
   const results = [];
   for (const o of plan) {
     const amt = c.amountToPrecision(sym, o.amount);
@@ -487,3 +508,5 @@ module.exports = async (toolName, params) => {
   if (!TOOLS[toolName]) throw new Error(`Unknown tool: ${toolName}`);
   return TOOLS[toolName](params);
 };
+// Helper pur expose pour les tests offline (marge isolee).
+module.exports._isolatedMarginCall = _isolatedMarginCall;

@@ -41,6 +41,50 @@ ok("pending: pas critique (entrée non remplie)", pending.critical === false && 
 const tpManque = verifyBracket(intended, { position: { size: 0.01, side: "short" }, slOrders: [{ amount: 0.01 }], tpOrders: [{ amount: 0.01 }] });
 ok("TP manquants: warn scale-out incomplet", tpManque.issues.some((i) => /TP posés vs/.test(i.msg)) && tpManque.critical === false);
 
+// ── LADDERED-AWARE : un ladder partiellement rempli ne doit PAS flagger "SL oversize" ──
+// (faux positif XRP/SUI audit 13.06 : SL = ladder complet, position = rungs remplis seulement,
+//  les SL des rungs pending sont pre-poses reduceOnly).
+const ladIntended = { side: "short", size: 24000, entry_mode: "laddered", stop_loss: 1.19, take_profits: [{ px: 1.10 }, { px: 1.05 }] };
+
+// 1 rung sur 3 rempli (8000) mais SL couvre le ladder complet (24000) -> INFO, pas critique
+const ladPartial = verifyBracket(ladIntended, {
+  position: { size: 8000, side: "short" },
+  slOrders: [{ amount: 24000 }],
+  tpOrders: [{ amount: 12000 }, { amount: 12000 }],
+});
+ok("laddered partiel: ok=true (pas de faux oversize)", ladPartial.ok === true && ladPartial.critical === false);
+ok("laddered partiel: note info pre-couverture", ladPartial.issues.some((i) => i.level === "info" && /pre-couvert|pending/.test(i.msg)));
+
+// SL > ladder complet (30000 > 24000) -> VRAI oversize critique
+const ladOver = verifyBracket(ladIntended, {
+  position: { size: 8000, side: "short" },
+  slOrders: [{ amount: 30000 }],
+  tpOrders: [{ amount: 12000 }],
+});
+ok("laddered VRAI oversize (SL > ladder complet): critique", ladOver.critical === true && /OVERSIZE reel/.test(ladOver.issues.find((i) => i.level === "critical").msg));
+
+// SL < position remplie (4000 < 8000 rempli) -> UNDERSIZE critique (portion exposee)
+const ladUnder = verifyBracket(ladIntended, {
+  position: { size: 8000, side: "short" },
+  slOrders: [{ amount: 4000 }],
+  tpOrders: [{ amount: 12000 }],
+});
+ok("laddered SL < position remplie: UNDERSIZE critique", ladUnder.critical === true && /UNDERSIZE/.test(ladUnder.issues.find((i) => i.level === "critical").msg));
+
+// ladder PLEINEMENT rempli (24000) + SL plein -> sain
+const ladFull = verifyBracket(ladIntended, {
+  position: { size: 24000, side: "short" },
+  slOrders: [{ amount: 24000 }],
+  tpOrders: [{ amount: 12000 }, { amount: 12000 }],
+});
+ok("laddered plein rempli: sain", ladFull.ok === true && ladFull.critical === false);
+
+// non-laddered : le comportement strict est PRESERVE (SL oversize reste critique)
+const strictOver = verifyBracket({ side: "short", size: 0.01, stop_loss: 64500, take_profits: [{ px: 60500 }] }, {
+  position: { size: 0.006, side: "short" }, slOrders: [{ amount: 0.01 }], tpOrders: [{ amount: 0.006 }],
+});
+ok("non-laddered: SL oversize reste critique (comportement strict preserve)", strictOver.critical === true);
+
 // ── classifyStops : classification SL/TP ROBUSTE au trailing (bug audit 18:07) ──
 // BUG : un SL trailé SOUS l'entrée (short en profit) était classé TP (trigger vs entrée) -> faux "position nue".
 // FIX : triggerDirection (1=hausse/2=baisse) en 1er, sinon trigger vs PRIX COURANT (pas l'entrée).

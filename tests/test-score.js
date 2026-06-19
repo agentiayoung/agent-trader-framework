@@ -2,7 +2,7 @@
 "use strict";
 // Tests offline deterministes du barème /14 (score.js). Zero reseau.
 // Run: node tests/test-score.js
-const { enrichScore, SCALE } = require("../trade-journal/score.js");
+const { enrichScore, SCALE, perceptionScore, combinedScore } = require("../trade-journal/score.js");
 let passed = 0, failed = 0;
 function eq(name, got, exp) {
   const g = JSON.stringify(got), e = JSON.stringify(exp);
@@ -62,6 +62,27 @@ eq("sans rr -> tier sub (RR requis)", nr.tier, "sub");
 const stored = enrichScore({ components: { zeiierman: 2, rsi: 2 }, gate: { regime_strong_opp: false }, zones: "zeiierman" }, { entry: 50, sl: 48, tp: 56 });
 ok("bloc stockable a les cles attendues",
   ["components", "total", "rr", "tier", "gate", "zones"].every((k) => k in stored));
+
+// ── F1 : scoring PERCEPTION /14 (perceptionScore + combinedScore) ──
+// confluence compacte type perception.compactPerception : {score14, side, opp14, ...}
+const cfShort = { score14: 9.4, side: "short", opp14: 2.0 };
+// aligne au sens
+const psA = perceptionScore(cfShort, "short");
+ok("perceptionScore aligne -> score14 du sens + aligned:true", psA && psA.score14 === 9.4 && psA.aligned === true && psA.tier === "A+");
+// sens oppose -> lit opp14
+const psO = perceptionScore(cfShort, "long");
+ok("perceptionScore contre-sens -> opp14 + aligned:false", psO && psO.score14 === 2 && psO.aligned === false && psO.tier === "sub");
+// opp14 absent + contre-sens -> null
+ok("perceptionScore contre-sens sans opp14 -> null", perceptionScore({ score14: 8, side: "short" }, "long") === null);
+// confluence absente -> null
+ok("perceptionScore null si confluence absente", perceptionScore(null, "short") === null);
+
+// combinedScore : edge x facteur perception [0.5,1.5]
+eq("combinedScore aligne fort (10 x (0.5+9.4/14))", combinedScore(10, cfShort, "short"), +(10 * (0.5 + 9.4 / 14)).toFixed(2));
+eq("combinedScore contre-sens faible redescend (10 x (0.5+2/14))", combinedScore(10, cfShort, "long"), +(10 * (0.5 + 2 / 14)).toFixed(2));
+eq("combinedScore sans perception = neutre (facteur 1)", combinedScore(10, null, "short"), 10);
+ok("combinedScore aligne fort > sans perception > contre faible",
+  combinedScore(10, cfShort, "short") > 10 && 10 > combinedScore(10, cfShort, "long"));
 
 console.log(`\n  score.js: ${passed} pass, ${failed} fail`);
 process.exit(failed ? 1 : 0);

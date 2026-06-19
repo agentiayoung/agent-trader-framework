@@ -40,6 +40,10 @@ function buildDigest(state) {
   md += `🆕 Aujourd'hui : ${s.today_trades ?? 0} trade(s), ${s.today_no_trades ?? 0} no-trade(s)\n`;
   if (s.stale_count) md += `⚠️ ${s.stale_count} trade(s) open/pending NON noté(s) aujourd'hui (timeline trouée)\n`;
   md += `🎯 score-eval : n=${s.score_eval_n ?? 0}`;
+  if (s.zones_fallback && s.zones_fallback.n) {
+    const z = s.zones_fallback;
+    md += `\n🗺️ zones : ${Math.round((z.rate || 0) * 100)}% screener_fallback (Desktop lu ${z.desktop}/${z.n}, ${z.days}j)`;
+  }
   return md;
 }
 

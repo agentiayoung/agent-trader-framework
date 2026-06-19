@@ -17,9 +17,13 @@ const bybitDir = path.join(__dirname, "..", "skills", "bybit");
 require(path.join(bybitDir, "index.js"));
 const ccxt = require(require.resolve("ccxt", { paths: [bybitDir] }));
 const { regimeBucket, macroAlign } = require("./edge-watch.js"); // buckets régime (22/35) + alignement macro, partagés
+const Vd = require("./validation.js"); // #1 fondation : CPCV-light + Deflated Sharpe + null bootstrap (opt-in OPT_CPCV=1)
+const U = require("./universe.js"); // registre asset-class -> /edge-sprint sur XAUT/SPY/QQQ (16.06)
 
-const PAIRS = (process.env.OPT_WATCHLIST ||
-  "BTC,ETH,SOL,BNB,XRP,DOGE,AVAX,LINK,ADA,SUI,LTC,DOT,TON,NEAR,HYPE,HBAR,ONDO,ASTER,TAO").split(",").map((s) => s.trim());
+// Defaut = univers du registre (crypto + commodity/ETF perps). OPT_WATCHLIST=XAUT,SPY,... cible un sous-ensemble.
+const PAIRS = (process.env.OPT_WATCHLIST
+  ? process.env.OPT_WATCHLIST.split(",").map((s) => s.trim()).filter(Boolean)
+  : U.enabledSymbols());
 const MIN_N = +(process.env.OPT_MINN || 25);
 const MIN_N_BUCKET = +(process.env.OPT_MINN_BUCKET || 12); // n min par bucket de régime (sinon "n faible")
 const TF = process.env.OPT_TF || "4h";   // timeframe de base testable : 4h (defaut), 1h, 2h...
@@ -65,6 +69,19 @@ function sideMatchedBaseline(candSet, rndSet, evalFn, minN = 12) {
   return { exp_matched: +exp.toFixed(3), n_random: rndSet.length, side_mix_long: +wL.toFixed(2) };
 }
 const FEE = parseFloat(process.env.OPT_FEE_PCT || "0.055") / 100; // frais/fill -> edge NET (round-trip ~0.11%)
+// SPRINT hold-vs-cut (15.06) : politiques d'EXIT pilotees env, comparees vs baseline (tenir au SL).
+//   OPT_CUT_R   = cut anticipe a -R d'excursion adverse (ex. 0.3 = couper a -0.3R). 0 = desactive.
+//   OPT_CUT_FLIP= 1 -> exit quand le close reclaim l'EMA20 (proxy du flip thesis-check). Zero impact live.
+const CUT_R = parseFloat(process.env.OPT_CUT_R || "0");
+const CUT_FLIP = process.env.OPT_CUT_FLIP === "1";
+const CPCV = process.env.OPT_CPCV === "1"; // validation robuste (CPCV-light + DSR + null bootstrap) — recherche, lineage research/
+
+// #1 PRUNING DE N (leçon re-qual 16.06) : le Deflated Sharpe deflate par le NOMBRE d'essais. Le
+// labo garde ~70 setups (ablations/controls/variantes/rejets) -> N gonfle -> SR0 explose -> DSR
+// ecrase TOUT. Le multiple-testing pertinent = seulement les VRAIS candidats qui pourraient passer
+// (ou rester) LIVE, pas les diagnostics. nTrials du DSR = ce sous-ensemble. Les autres restent
+// calcules (preuve/controle) mais NE comptent PAS dans la deflation. Allowlist = playbook + sprint courant.
+const CANDIDATE = /^(S1_short_bounce|S2_short_continuation|S2_long_continuation|S3_long_oversold|S5_fade_range|S12_squeeze_break|MR8_MTF|MR4_bb_trendfilt|MR8_laddered|S1_MTF_laddered|S2_laddered|FVG_cont|FVG_cont_short|FVG_react|FVG_disp)$/;
 
 // Grille de sorties (multiples d'ATR). tp=99 = pas de TP fixe (trailing seul).
 const SLs = [1.0, 1.5, 2.0, 2.5];
@@ -133,7 +150,7 @@ function supertrend(H, L, C, p = 10, mult = 3) {
 // détecte les signaux (entrées) de chaque setup sur une paire
 // dAdx (optionnel) = ADX DAILY de la paire mappé sur les barres 4H -> taggue le RÉGIME
 // de chaque signal (range/trending/strong) pour le split d'expectancy par régime (piste 5a).
-function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng) {
+function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
   const rsi = rsiS(C), e20 = emaS(C, 20), e50 = emaS(C, 50), e200 = emaS(C, 200), atr = atrS(H, L, C), md = macdS(C), st = supertrend(H, L, C, 10, 3);
   const adxObj = adxS(H, L, C, 14), adx = adxObj.adx, pdi = adxObj.pdi, mdi = adxObj.mdi;
   const sigs = {}; const lastBar = {};
@@ -149,7 +166,7 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng) {
     const macroB = regimeBucket(mAdx ? mAdx[i] : null);
     const malign = macroAlign(side, macroB, mBull ? mBull[i] : null);
     // entryPx (sprint #6) : variantes d'entrée LIMIT — entrée au niveau touché, pas au close.
-    (sigs[setup] = sigs[setup] || []).push({ i, side, entry: entryPx ?? C[i], atr: atr[i], phase, regime, malign }); lastBar[setup] = i;
+    (sigs[setup] = sigs[setup] || []).push({ i, side, entry: entryPx ?? C[i], atr: atr[i], phase, regime, malign, pos: C.length ? i / C.length : 0 }); lastBar[setup] = i; // pos = position temporelle normalisee (0-1) -> blocs CPCV
   };
   // ==== SPRINT #6 (10.06, post-mortem flash-sweep HYPE) : placement d'entrée MR8 ====
   // Même signal MR8_MTF, 3 mécanismes d'entrée différents (design committé AVANT run) :
@@ -171,6 +188,9 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng) {
   // bounceonly (TOUS les rungs au-DESSUS du prix = style ASTER live, RIEN si pas de rebond)
   // vs bounce_cont (bounceonly + entree de CONTINUATION au close de fenetre si 0 fill = idee A2).
   let trendBounce = []; // {base('S1'|'S2'), side, t1, t2, t3, expiry, fills:[]}
+  // ==== SPRINT FVG (16.06, demande the maintainer) : Fair Value Gaps (design committe AVANT run) ====
+  // pendings limit FVG : {name, side, level, expiry}. Filles a j>i quand le niveau est touche.
+  let fvgPend = [];
   for (let i = 205; i < C.length - 1; i++) {
     if (!atr[i]) continue;
     const px = C[i];
@@ -245,6 +265,69 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng) {
     // MR8 + daily : ne short que si daily baissier, ne long que si daily haussier
     if (srsi < 0.15 && db === true) push("MR8_MTF", i, "long");
     if (srsi > 0.85 && db === false) push("MR8_MTF", i, "short");
+    // ==== SPRINT 15.06 (the maintainer : gate directionnel + rapide) : MEME signal MR8 (srsi<0.15), gate LONG
+    // assoupli de EMA200d (db) vers EMA50d (db50). Design committe AVANT run. Zero impact live. ====
+    const db50 = dBull50 ? dBull50[i] : null;
+    if (srsi < 0.15 && db50 === true) push("MR8_long_d50", i, "long");                  // gate rapide (px>EMA50d)
+    if (srsi < 0.15 && db50 === true && db === false) push("MR8_long_recov", i, "long"); // zone de reprise que l'EMA200 bloque
+    // ==== SPRINT 15.06 #2 (the maintainer : famille MOMENTUM bidirectionnelle) — design committe AVANT run ====
+    const rngHL = H[i] - L[i];
+    if (atr[i] > 0 && rngHL > 1.8 * atr[i]) {               // MOM_thrust : poussee de volatilite, close en quartile extreme
+      const posC = rngHL > 0 ? (C[i] - L[i]) / rngHL : 0.5;
+      if (posC > 0.75) push("MOM_thrust", i, "long");
+      if (posC < 0.25) push("MOM_thrust", i, "short");
+    }
+    const bullNow = px > e200[i] && e50[i] > e200[i], bullPrev = C[i - 1] > e200[i - 1] && e50[i - 1] > e200[i - 1];
+    const bearNow = px < e200[i] && e50[i] < e200[i], bearPrev = C[i - 1] < e200[i - 1] && e50[i - 1] < e200[i - 1];
+    if (bullNow && !bullPrev) push("MOM_stack_flip", i, "long");   // bascule FRAICHE de la structure EMA -> long
+    if (bearNow && !bearPrev) push("MOM_stack_flip", i, "short");  // bascule fraiche bear -> short
+    // ==== SPRINT FVG (16.06, demande the maintainer) — design committe AVANT run (docs/plans/2026-06-16-edge-sprint-fvg-design.md) ====
+    // FVG 3-bougies = gap d'imbalance laisse par une bougie de displacement (i-1) :
+    //   bull : L[i] > H[i-2] (gap up) ; bear : H[i] < L[i-2] (gap down). displacement = range(i-1)>1.2*ATR + corps directionnel.
+    // C1 FVG_cont  : continuation, LIMIT retrace au 50% du gap, aligne daily, sens du displacement (LE modele).
+    // C2 FVG_disp  : controle, entree AU close (chase, market) -> isole l'apport du retrace.
+    // C3 FVG_react : range-only, fade le displacement (gap-fill reversion), LIMIT au retest de l'extreme de l'impulsion.
+    // 1) traiter les pendings FVG (un pending cree au bar i ne fille qu'a j>i)
+    if (fvgPend.length) {
+      const kept = [];
+      for (const p of fvgPend) {
+        if (i > p.expiry) continue; // expire sans fill
+        let filled = false;
+        if (p.side === "long" && L[i] <= p.level) { push(p.name, i, "long", p.level); filled = true; }
+        else if (p.side === "short" && H[i] >= p.level) { push(p.name, i, "short", p.level); filled = true; }
+        if (!filled) kept.push(p);
+      }
+      fvgPend = kept;
+    }
+    // 2) detecter le FVG au bar i + enregistrer les entrees
+    const dispBig = atr[i - 1] > 0 && (H[i - 1] - L[i - 1]) > 1.2 * atr[i - 1];
+    const bullFvg = L[i] > H[i - 2] && dispBig && C[i - 1] > O[i - 1];
+    const bearFvg = H[i] < L[i - 2] && dispBig && C[i - 1] < O[i - 1];
+    if (bullFvg) {
+      const mid = (H[i - 2] + L[i]) / 2;                                   // 50% du gap = fair value
+      const gap = L[i] - H[i - 2];
+      const shallow = L[i] - 0.25 * gap;                                   // retrace COURT (25% dans le gap depuis le haut) = pres du momentum
+      if (db === true) {
+        fvgPend.push({ name: "FVG_cont", side: "long", level: mid, expiry: i + 6 });
+        // FVG_cont_short (16.06, pre-enregistre pour RE-TEST futur, demande the maintainer) : retrace COURT
+        // 25% + fenetre serree (4 barres) = tenter de capter le momentum de deplacement (l'edge
+        // trouve dans FVG_disp) en restant LIMIT-compatible (B1), la ou le retrace 50% l'a rate.
+        fvgPend.push({ name: "FVG_cont_short", side: "long", level: shallow, expiry: i + 4 });
+        push("FVG_disp", i, "long");
+      }
+      if (range) fvgPend.push({ name: "FVG_react", side: "short", level: H[i], expiry: i + 6 }); // fade : short au retest du haut, vise le gap-fill
+    }
+    if (bearFvg) {
+      const mid = (H[i] + L[i - 2]) / 2;
+      const gap = L[i - 2] - H[i];
+      const shallow = H[i] + 0.25 * gap;
+      if (db === false) {
+        fvgPend.push({ name: "FVG_cont", side: "short", level: mid, expiry: i + 6 });
+        fvgPend.push({ name: "FVG_cont_short", side: "short", level: shallow, expiry: i + 4 });
+        push("FVG_disp", i, "short");
+      }
+      if (range) fvgPend.push({ name: "FVG_react", side: "long", level: L[i], expiry: i + 6 });  // fade : long au retest du bas
+    }
     // ==== SPRINT #6 : variantes d'entrée du MÊME signal MR8_MTF (design pré-committé) ====
     // 1) traiter les pendings au bar courant (un pending créé au bar i ne fille qu'à j>i)
     if (s6Pend.length) {
@@ -504,7 +587,7 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng) {
 }
 
 // simule une sortie pour une config donnée -> R (vs risque initial)
-function sim(side, entry, atr, H, L, C, i, cfg) {
+function sim(side, entry, atr, H, L, C, i, cfg, e20) {
   let stop = side === "long" ? entry - cfg.sl * atr : entry + cfg.sl * atr;
   const tp = cfg.tp >= 99 ? null : (side === "long" ? entry + cfg.tp * atr : entry - cfg.tp * atr);
   const risk = Math.abs(entry - stop); if (!risk) return 0;
@@ -512,6 +595,15 @@ function sim(side, entry, atr, H, L, C, i, cfg) {
   let be = false, rawR = null; const end = Math.min(C.length - 1, i + MAX_HOLD);
   for (let j = i + 1; j <= end; j++) {
     const hi = H[j], lo = L[j];
+    // CUT ANTICIPE (sprint hold-vs-cut 15.06) : adverse-first, AVANT le SL (meme convention).
+    if (CUT_R > 0) {
+      const adv = side === "long" ? (entry - lo) : (hi - entry);  // excursion adverse en prix
+      if (adv >= CUT_R * risk) { rawR = -CUT_R; break; }
+    }
+    if (CUT_FLIP && e20 && e20[j] != null) {                       // reclaim/perte de l'EMA20 (flip)
+      if (side === "short" && C[j] > e20[j]) { rawR = (entry - C[j]) / risk; break; }
+      if (side === "long" && C[j] < e20[j]) { rawR = (C[j] - entry) / risk; break; }
+    }
     if (side === "long") {
       if (lo <= stop) { rawR = (stop - entry) / risk; break; }
       if (tp && hi >= tp) { rawR = (tp - entry) / risk; break; }
@@ -551,17 +643,18 @@ async function run() {
     const O = oh.map((x) => x[1]), H = oh.map((x) => x[2]), L = oh.map((x) => x[3]), C = oh.map((x) => x[4]), V = oh.map((x) => x[5]);
     // DAILY (timeframe superieur) pour l'alignement MTF — biais = close > EMA200 daily, sans lookahead
     // + ADX DAILY mappé sur les barres 4H -> régime de chaque signal (split par régime, piste 5a).
-    let dBull = null, dAdx = null;
+    let dBull = null, dAdx = null, dBull50 = null;
     try {
       const dOh = await c.fetchOHLCV(s + "/USDT:USDT", "1d", undefined, 400);
       if (dOh && dOh.length > 50) {
-        const dC = dOh.map((x) => x[4]), dTs = dOh.map((x) => x[0]), dE = emaS(dC, 200);
+        const dC = dOh.map((x) => x[4]), dTs = dOh.map((x) => x[0]), dE = emaS(dC, 200), dE50 = emaS(dC, 50);
         const dAdxArr = adxS(dOh.map((x) => x[2]), dOh.map((x) => x[3]), dC, 14).adx;
         const idxAt = (t) => { let k = -1; for (let j = 0; j < dTs.length; j++) { if (dTs[j] < t) k = j; else break; } return k; }; // dernier jour CLOS avant la barre (sans lookahead)
         dBull = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dC[k] > dE[k] : null; });
+        dBull50 = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dC[k] > dE50[k] : null; }); // gate daily RAPIDE (EMA50d) — sprint 15.06
         dAdx = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dAdxArr[k] : null; });
       }
-    } catch (e) { dBull = null; dAdx = null; }
+    } catch (e) { dBull = null; dAdx = null; dBull50 = null; }
     // WEEKLY (macro) : biais = close > EMA20 weekly, sans lookahead
     let wBull = null;
     try {
@@ -574,14 +667,19 @@ async function run() {
     // Mapping macro BTC -> barres 4H de CETTE paire (même pattern sans-lookahead que dBull/wBull).
     const mAdx = btcTs ? oh.map((bar) => { const k = macroIdxAt(bar[0]); return k >= 0 ? btcAdxArr[k] : null; }) : null;
     const mBull = btcTs ? oh.map((bar) => { const k = macroIdxAt(bar[0]); return k >= 0 ? btcBullArr[k] : null; }) : null;
-    const { sigs } = detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, mulberry32(strSeed(s + "|" + TF)));
+    const { sigs } = detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, mulberry32(strSeed(s + "|" + TF)), dBull50);
+    const e20arr = emaS(C, 20);   // EMA20 4H pour la politique cut_flip (sprint hold-vs-cut)
     for (const [setup, list] of Object.entries(sigs)) {
       allSigs[setup] = allSigs[setup] || [];
-      for (const sg of list) allSigs[setup].push({ ...sg, H, L, C });
+      for (const sg of list) allSigs[setup].push({ ...sg, H, L, C, e20: e20arr });
     }
   }
-  const WR_FLOOR = 45;            // on ne veut QUE des configs gagnantes (WR>=45%)
-  const evalSet = (cfg, set) => { if (!set.length) return { exp: 0, wr: 0, n: 0 }; let R = 0, w = 0; for (const sg of set) { const r = sim(sg.side, sg.entry, sg.atr, sg.H, sg.L, sg.C, sg.i, cfg); R += r; if (r > 0) w++; } return { exp: R / set.length, wr: w / set.length * 100, n: set.length }; };
+  const WR_FLOOR = process.env.OPT_WR_FLOOR != null ? +process.env.OPT_WR_FLOOR : 45; // sprint hold-vs-cut: =0 pour comparer l'exp pure des politiques (le cut baisse le WR)
+  const evalSet = (cfg, set) => { if (!set.length) return { exp: 0, wr: 0, n: 0 }; let R = 0, w = 0; for (const sg of set) { const r = sim(sg.side, sg.entry, sg.atr, sg.H, sg.L, sg.C, sg.i, cfg, sg.e20); R += r; if (r > 0) w++; } return { exp: R / set.length, wr: w / set.length * 100, n: set.length }; };
+  // evalR : meme sim mais retourne la SERIE de R (pour Sharpe/DSR/bootstrap, #1). optimizeCfg : le
+  // sweep SL×TP×trail×be extrait (reutilise par CPCV qui RE-optimise par fold = anti-leakage rigoureux).
+  const evalR = (cfg, set) => { const rs = []; for (const sg of set) rs.push(sim(sg.side, sg.entry, sg.atr, sg.H, sg.L, sg.C, sg.i, cfg, sg.e20)); return rs; };
+  const optimizeCfg = (set) => { let best = null, bestCfg = null; for (const sl of SLs) for (const tp of TPs) for (const trail of TRAILs) for (const be of BEs) { const cfg = { sl, tp, trail, be }; const r = evalSet(cfg, set); if (r.wr >= WR_FLOOR && (!best || r.exp > best.exp)) { best = r; bestCfg = cfg; } } return { best, bestCfg }; };
   const out = [];
   for (const [setup, sigs] of Object.entries(allSigs)) {
     const train = sigs.filter((s) => s.phase === "train"), test = sigs.filter((s) => s.phase === "test");
@@ -630,6 +728,35 @@ async function run() {
       if (set.length >= MIN_N_BUCKET) { const r = evalSet(bestCfg, set); byMacro[bucket] = { n: r.n, exp: +r.exp.toFixed(3), wr: +r.wr.toFixed(1) }; }
       else if (set.length > 0) byMacro[bucket] = { n: set.length, note: "n faible" };
     }
+    // ── #1 VALIDATION ROBUSTE (opt-in OPT_CPCV) : CPCV-light (re-optim par fold + embargo) +
+    // Sharpe OOS + null block-bootstrap. La 2e passe (apres la boucle) ajoutera le Deflated Sharpe
+    // (qui a besoin du nombre d'essais N et de la variance des Sharpes cross-setups).
+    let cpcv = null;
+    if (CPCV) {
+      const NB = 6, blockOf = (s) => Math.min(NB - 1, Math.floor(NB * (s.pos || 0)));
+      const testR = evalR(bestCfg, test);
+      const folds = Vd.cpcvFolds(NB, 2, 1);
+      const foldExp = [], foldSharpe = [];
+      for (const f of folds) {
+        const trSet = sigs.filter((s) => f.train.includes(blockOf(s)));
+        const teSet = sigs.filter((s) => f.test.includes(blockOf(s)));
+        if (trSet.length < 20 || teSet.length < 10) continue;
+        const oc = optimizeCfg(trSet); if (!oc.bestCfg) continue;
+        const rr = evalR(oc.bestCfg, teSet); if (rr.length < 10) continue;
+        foldExp.push(Vd.mean(rr)); const sh = Vd.sharpe(rr); if (sh != null) foldSharpe.push(sh);
+      }
+      const med = (arr) => { if (!arr.length) return null; const a = arr.slice().sort((x, y) => x - y); const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+      const shOos = Vd.sharpe(testR);
+      const bootP = testR.length >= 10 ? Vd.blockBootstrapPValue(testR, { blockLen: 5, draws: 1000, seed: setup }) : null;
+      cpcv = {
+        oos_sharpe: shOos != null ? +shOos.toFixed(3) : null,
+        folds_evaluated: foldExp.length,
+        folds_pos_frac: foldExp.length ? +(foldExp.filter((e) => e > 0).length / foldExp.length).toFixed(2) : null,
+        cpcv_median_sharpe: med(foldSharpe) != null ? +med(foldSharpe).toFixed(3) : null,
+        boot_p: bootP != null ? +bootP.toFixed(3) : null,
+        _testR: testR, _skew: Vd.skewness(testR), _kurt: Vd.kurtosisRaw(testR),
+      };
+    }
     out.push({
       setup, signals: sigs.length,
       config_optimale: { sl: bestCfg.sl, tp: bestCfg.tp >= 99 ? "trail-only" : bestCfg.tp, trail: bestCfg.trail || "off", be: bestCfg.be },
@@ -640,14 +767,35 @@ async function run() {
       test_by_macro_pairfav: byMacro,
       random_control: randomControl,
       beats_random: beatsRandom,
+      ...(cpcv ? { cpcv } : {}),
       verdict: setup === "RANDOM_CONTROL" ? "🎲 baseline random (plancher de bruit du pipeline — si 'ROBUSTE', le harnais sur-fitte)"
         : robust ? "✅ ROBUSTE (gagnant in & out-of-sample, bat le random)"
         : robustBase && beatsRandom === false ? "⚠️ NE BAT PAS LE RANDOM (drift marché/exits, pas un edge de timing d'entrée)"
         : "⚠️ overfit (bon en train, échoue en test)"
     });
   }
+  // ── #1 DEFLATED SHARPE (2e passe) : a besoin de N (nb de candidats testes) + var des Sharpes
+  // cross-setups pour deflater le multiple-testing. Verdict_v2 durci = CPCV + DSR + bootstrap.
+  if (CPCV) {
+    // N HONNETE = vrais candidats (allowlist), pas les ~70 diagnostics (sinon DSR ecrase tout, leçon 16.06).
+    const cands = out.filter((o) => o.cpcv && CANDIDATE.test(o.setup) && o.cpcv.oos_sharpe != null);
+    const shs = cands.map((o) => o.cpcv.oos_sharpe);
+    const nTrials = shs.length || 1, varTrials = shs.length > 1 ? Vd.std(shs) ** 2 : 0;
+    for (const o of out) {
+      if (!o.cpcv || o.cpcv.oos_sharpe == null) { if (o.cpcv) { delete o.cpcv._testR; delete o.cpcv._skew; delete o.cpcv._kurt; } continue; }
+      o.cpcv.candidate = CANDIDATE.test(o.setup);
+      const dsr = Vd.deflatedSharpe(o.cpcv.oos_sharpe, { nTrials, varTrials, skew: o.cpcv._skew, kurt: o.cpcv._kurt, n: o.cpcv._testR.length });
+      o.cpcv.dsr = dsr != null ? +dsr.toFixed(3) : null;
+      o.cpcv.dsr_nTrials = nTrials;
+      o.cpcv.verdict_v2 = o.setup === "RANDOM_CONTROL" ? "baseline"
+        : (o.cpcv.folds_pos_frac != null && o.cpcv.folds_pos_frac >= 0.5 && o.cpcv.dsr != null && o.cpcv.dsr >= 0.6 && o.cpcv.boot_p != null && o.cpcv.boot_p < 0.05)
+          ? "✅ ROBUSTE_V2 (CPCV folds>=50% + DSR>=0.6 + bootstrap p<0.05)"
+          : "⚠️ FRAGILE_V2 (echoue CPCV/DSR/bootstrap — possible bruit, cf. O6)";
+      delete o.cpcv._testR; delete o.cpcv._skew; delete o.cpcv._kurt;
+    }
+  }
   out.sort((a, b) => (b.test_OOS ? b.test_OOS.exp : -9) - (a.test_OOS ? a.test_OOS.exp : -9));
-  return { pairs: pairsOk, periode: `${DEEP_DAYS > 0 ? "~" + DEEP_DAYS + "j (OPT_DEEP)" : "~1000 bougies"} ${TF} (train 62% / test 38% OOS)`, objectif: `WR>=${WR_FLOOR}% + expectancy>0, valide hors-echantillon`, setups: out };
+  return { pairs: pairsOk, periode: `${DEEP_DAYS > 0 ? "~" + DEEP_DAYS + "j (OPT_DEEP)" : "~1000 bougies"} ${TF} (train 62% / test 38% OOS)${CPCV ? " + CPCV/DSR/bootstrap (#1)" : ""}`, objectif: `WR>=${WR_FLOOR}% + expectancy>0, valide hors-echantillon`, setups: out };
 }
 
 if (require.main === module) {

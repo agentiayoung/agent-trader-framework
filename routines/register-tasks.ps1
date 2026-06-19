@@ -58,6 +58,17 @@ try {
   Log "OK  AgentTrader-HealthCheck (horaire)"
 } catch { Log "ERR HealthCheck : $($_.Exception.Message)" }
 try {
+  # F3.3 (19.06) : monitor-tick ENTRE les routines (toutes les 30 min) -> ferme l'angle mort 4h.
+  # READ-ONLY + alerte seule (position NUE / STALE / flip) ; AUCUN ordre place (approved pour l'auto-exec).
+  $mtick = "$proj\routines\monitor-tick.ps1"
+  $am = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$mtick`""
+  $tm = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 365)
+  $sm = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+  Register-ScheduledTask -TaskName "AgentTrader-MonitorTick" -Action $am -Trigger $tm -Settings $sm `
+    -Description "Monitoring entre routines (30 min) : alerte Telegram si position NUE/STALE/flip (alerte seule)" -Force -ErrorAction Stop | Out-Null
+  Log "OK  AgentTrader-MonitorTick (30 min)"
+} catch { Log "ERR MonitorTick : $($_.Exception.Message)" }
+try {
   $a2 = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$health`" -Digest"
   $t2 = New-ScheduledTaskTrigger -Daily -At "08:00"
   $s2 = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

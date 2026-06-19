@@ -14,9 +14,14 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN_ROUTINE || process.env.TELEGRAM_BOT
 const CHAT = process.env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "";
 
 // Une tentative d'envoi (timeout 8s -> jamais bloquant). Resout true/false.
-function sendOnce(text) {
+// markdown=false -> texte BRUT (pas de parse_mode) : un message technique (paths avec _,
+// identifiants comme last_complete, exit(1)...) casse le parser Markdown de Telegram -> HTTP 400
+// -> "non envoye". Le texte brut passe TOUJOURS. (Bug racine des alertes perdues 06:07/14:07 du 11.06.)
+function sendOnce(text, markdown = true) {
   return new Promise((resolve) => {
-    const data = JSON.stringify({ chat_id: CHAT, text, parse_mode: "Markdown", disable_web_page_preview: true });
+    const body = { chat_id: CHAT, text, disable_web_page_preview: true };
+    if (markdown) body.parse_mode = "Markdown";
+    const data = JSON.stringify(body);
     const req = https.request({
       hostname: "api.telegram.org", path: `/bot${TOKEN}/sendMessage`, method: "POST",
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
@@ -27,14 +32,18 @@ function sendOnce(text) {
   });
 }
 
-// Envoi avec RETRY (3 tentatives, backoff) — un blip réseau transitoire ne doit PAS
-// perdre une notification (le dead-man/digest en dépendent). Constaté : routine 02:07
-// a eu un echec notify transitoire (token OK, reseau). Robustesse ajoutee 09.06.
+// Envoi avec RETRY (backoff) PUIS FALLBACK TEXTE BRUT — une notification ne doit JAMAIS se perdre
+// (le dead-man/digest/alertes d'incompletude en dependent). Deux modes d'echec couverts :
+//  (1) blip reseau transitoire -> retry (constate routine 02:07, token OK) ;
+//  (2) Markdown invalide (texte technique : _, *, [, backtick, paths) -> HTTP 400 systematique
+//      que le retry ne resout PAS -> on RE-TENTE en texte BRUT (sans parse_mode). Bug 11.06.
 async function send(text, retries = 2) {
   if (!TOKEN || !CHAT) { console.log("(telegram non configuré — skip)"); return false; }
-  for (let i = 0; i <= retries; i++) {
-    if (await sendOnce(text)) return true;
-    if (i < retries) await new Promise((r) => setTimeout(r, 800 * (i + 1))); // 0.8s, 1.6s
+  for (const markdown of [true, false]) {            // d'abord Markdown (joli), sinon brut (garanti)
+    for (let i = 0; i <= retries; i++) {
+      if (await sendOnce(text, markdown)) return true;
+      if (i < retries) await new Promise((r) => setTimeout(r, 800 * (i + 1))); // 0.8s, 1.6s
+    }
   }
   return false;
 }

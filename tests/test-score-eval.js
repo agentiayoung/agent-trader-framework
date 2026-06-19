@@ -2,7 +2,7 @@
 "use strict";
 // Test offline du bucketing de score-eval sur une fixture synthétique.
 // Run: node tests/test-score-eval.js
-const { evalScores } = require("../trade-journal/score.js");
+const { evalScores, evalPerception } = require("../trade-journal/score.js");
 let passed = 0, failed = 0;
 function ok(name, cond) { if (cond) { passed++; console.log("  PASS  " + name); } else { failed++; console.log("  FAIL  " + name); } }
 
@@ -52,6 +52,24 @@ ok("bloc brut: total dérivé des composantes -> bucket 6-8 (pas <6)",
   r2.by_bucket["6-8"] && r2.by_bucket["6-8"].n === 1 && !r2.by_bucket["<6"]);
 ok("bloc brut: tier dérivé (8/14 + rr 1.63 -> sub, pas crash)", r2.by_tier["sub"] && r2.by_tier["sub"].n === 1);
 ok("bloc brut: composante zeiierman comptée présente", r2.by_component.zeiierman && r2.by_component.zeiierman.present.n === 1);
+
+// ── F1 : evalPerception (correlation /14 PERCEPTION -> R, source deterministe) ──
+const percFixture = [
+  { status: "closed", strategy: "S2", r_multiple: 2.0, score_perception: { score14: 9.4, tier: "A+", aligned: true } },
+  { status: "closed", strategy: "MR8", r_multiple: 1.0, score_perception: { score14: 7.2, tier: "B", aligned: true } },
+  { status: "closed", strategy: "S5", r_multiple: -1.0, score_perception: { score14: 5.0, tier: "sub", aligned: true } },
+  { status: "closed", strategy: "S1", r_multiple: -0.5, score_perception: { score14: 8.0, tier: "B", aligned: false } }, // contre-confluence
+  { status: "open", strategy: "X", score_perception: { score14: 9 } },                 // ignore (pas cloture)
+  { status: "closed", strategy: "Y", r_multiple: 0.5 },                                 // ignore (pas de score_perception)
+  { status: "closed", strategy: "MANUAL_TEST", r_multiple: 5.0, score_perception: { score14: 12, tier: "A+", aligned: true } }, // ignore (MANUAL_TEST)
+];
+const rp = evalPerception(percFixture);
+ok("evalPerception: 4 trades scores (manual+open+sans exclus)", rp.n === 4);
+ok("evalPerception bucket 9-11 avgR=2 (score14 9.4)", rp.by_bucket["9-11"] && rp.by_bucket["9-11"].n === 1 && rp.by_bucket["9-11"].avg_r === 2);
+ok("evalPerception bucket 6-8 = S2(7.2) + S1(8.0)", rp.by_bucket["6-8"] && rp.by_bucket["6-8"].n === 2);
+ok("evalPerception bucket <6 avgR=-1 (score14 5.0)", rp.by_bucket["<6"] && rp.by_bucket["<6"].n === 1 && rp.by_bucket["<6"].avg_r === -1);
+ok("evalPerception by_aligned splitte aligned(3)/counter(1)", rp.by_aligned.aligned.n === 3 && rp.by_aligned.counter.n === 1);
+ok("evalPerception tier B = 2 trades (7.2 + 8.0)", rp.by_tier["B"] && rp.by_tier["B"].n === 2);
 
 console.log(`\n  score-eval: ${passed} pass, ${failed} fail`);
 process.exit(failed ? 1 : 0);
