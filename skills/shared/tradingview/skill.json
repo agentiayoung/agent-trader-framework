@@ -2,7 +2,7 @@
   "name": "tradingview-strategy",
   "version": "1.0.0",
   "description": "OpenClaw shared skill -- TradingView strategy generation (Pine Script v6), backtest diagnosis, strategy selection from a canonical library, and webhook alert config. Pure logic, no exchange API calls. Signals are executed by the hyperliquid skill only.",
-  "author": "the maintainer",
+  "author": "hugo",
   "tools": [
     {
       "name": "tv_generate_strategy",

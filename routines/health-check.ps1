@@ -9,7 +9,7 @@
 #         powershell -File routines\health-check.ps1 -Digest    (resume quotidien)
 param([switch]$Digest, [switch]$Review)
 $ErrorActionPreference = "Stop"
-$proj = Split-Path -Parent $PSScriptRoot
+$proj = "C:\Users\admin\Desktop\DEV CLAUDE CODE\projets\agent-trader"
 Set-Location $proj
 $logdir = "$proj\routines\logs"; New-Item -ItemType Directory -Force -Path $logdir | Out-Null
 $log = "$logdir\health-check.log"

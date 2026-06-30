@@ -44,7 +44,7 @@ ok(U.isTradable("NVDA", { demo: false }) === false, "NVDA not tradable hors demo
 ok(U.isTradable("SPY", { demo: false }) === false, "SPY not tradable hors demo");
 ok(U.tradableSymbols({ demo: false }).length === 19, "hors demo : exactement 19 tradables (crypto)");
 ok(U.tradableSymbols({ demo: false }).every((s) => U.classOf(s) === "crypto"), "hors demo : tradables = crypto only");
-// DEMO_ACTIVE (approved 16.06) : on teste l'infra sur toutes les classes -> non-crypto tradable.
+// DEMO_ACTIVE (GO Hugo 16.06) : on teste l'infra sur toutes les classes -> non-crypto tradable.
 ok(U.isTradable("XAUT", { demo: true }) === true, "XAUT tradable EN demo");
 ok(U.isTradable("NVDA", { demo: true }) === true, "NVDA tradable EN demo");
 ok(U.isTradable("SPY", { demo: true }) === true, "SPY tradable EN demo");

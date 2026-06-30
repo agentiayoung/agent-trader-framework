@@ -111,7 +111,7 @@ function foldGroupIntoClosedParent(parent, g) {
     realized_pnl: +realized.toFixed(4),
     fees: +fees.toFixed(4),
     net_pnl: +(realized - fees).toFixed(4),
-    outcome: realized > 0 ? "win" : "loss",
+    outcome: (realized - fees) > 0 ? "win" : "loss", // win/loss = NET (apres frais)
   };
 }
 
@@ -145,7 +145,87 @@ function claimLadderFills(trade, groups, positions, usedG, usedP) {
   return out;
 }
 
+// Reclame les fills d'un trade NON-laddered qui SCALE-OUT (sorties multi-paliers TP).
+// Contrairement au laddered (entrees a prix differents -> plusieurs groupes par enveloppe
+// entry..SL), ici l'entree est ~constante : on matche les groupes par PROXIMITE d'entree
+// (tolerance relative 0.5%) + meme (symbol, side) + posterieurs a l'ouverture. But : eviter
+// la cloture PREMATUREE (un partiel ferme pendant que la position reste ouverte -> le parent
+// est clos avec un seul partiel) et la fragmentation en `reconcile_orphan` (LINK 20.06 :
+// -13 parent / +71 orphelin = +58 reel ; SUI long 28.06 : +3.74 parent / +1.43 orphelin).
+// Garde-fou anti-collision : la tolerance d'entree + le sens + la fenetre temps separent
+// deux trades distincts du meme symbole (ex. SUI short 0.6995 vs 0.7056 = 0.87% > 0.5%). Pur.
+//   trade     : trade NON-laddered (open/pending/closed)
+//   groups    : tableau gl [{symbol, side, entry, avgExit, qty, pnl, fees, lastTs}]
+//   positions : tableau ccxt [{symbol, side, entryPrice, contracts}]
+//   usedG/usedP : Set d'indices deja consommes (lus ici, mutes par le caller)
+// -> { groupIdx:[...], posIdx:number|-1 }. Idempotent (depend des fills Bybit courants).
+function claimScaleOutFills(trade, groups, positions, usedG, usedP) {
+  const out = { groupIdx: [], posIdx: -1 };
+  if (!trade || isLadder(trade)) return out;
+  const sym = baseSym(trade.symbol);
+  const ref = Number(trade.entry_actual ?? trade.entry_planned);
+  if (!Number.isFinite(ref)) return out;
+  const tol = Math.abs(ref) * 0.005;
+  const openMs = trade.ts_open ? new Date(trade.ts_open).getTime() : 0;
+  const TOL = 6 * 3600 * 1000;
+  (groups || []).forEach((g, i) => {
+    if (usedG && usedG.has(i)) return;
+    if (baseSym(g.symbol) !== sym || g.side !== trade.side) return;
+    if (Math.abs(Number(g.entry) - ref) > tol) return;
+    if (openMs && Number.isFinite(g.lastTs) && g.lastTs < openMs - TOL) return;
+    out.groupIdx.push(i);
+  });
+  out.posIdx = (positions || []).findIndex((p, i) =>
+    !(usedP && usedP.has(i)) && baseSym(p.symbol) === sym && p.side === trade.side
+    && Math.abs(Number(p.entryPrice) - ref) <= tol);
+  return out;
+}
+
+// Replie les `reconcile_orphan` (fragments) dans leur trade parent CLOS quand c'est SANS
+// AMBIGUITE la meme position : meme (symbol, side), entree a +-0.5%, cloture de l'orphelin
+// dans la fenetre de vie du parent (+-12h de tolerance). N'agit QUE si EXACTEMENT un parent
+// candidat (0 ou plusieurs -> on laisse l'orphelin, conservateur). Combine des PnL DEJA
+// enregistres au journal -> conserve le total EXACTEMENT (aucune dependance Bybit, pas de
+// double-compte). Pur : renvoie { trades, merges }. Idempotent (orphelin retire apres fold).
+// Repare l'historique (LINK 20.06 -13/+71 -> +58 ; SUI long 28.06 +3.74/+1.43 -> +5.17).
+function foldOrphansIntoParents(trades, { now = Date.now() } = {}) {
+  const TOL_MS = 12 * 3600 * 1000;
+  const isOrphan = (t) => t && t.strategy === "reconcile_orphan";
+  const entryOf = (t) => Number(t && (t.entry_actual ?? t.entry_planned));
+  const list = (trades || []).map((t) => ({ ...t })); // copie defensive
+  const removeIds = new Set();
+  const merges = [];
+  for (const o of list) {
+    if (!isOrphan(o) || o.status !== "closed" || removeIds.has(o.id)) continue;
+    const oEntry = entryOf(o);
+    if (!Number.isFinite(oEntry)) continue;
+    const oClose = new Date(o.ts_close || o.ts_open || 0).getTime();
+    const tol = Math.abs(oEntry) * 0.005;
+    const cands = list.filter((p) => {
+      if (p === o || isOrphan(p) || removeIds.has(p.id) || p.status !== "closed") return false;
+      if (baseSym(p.symbol) !== baseSym(o.symbol) || p.side !== o.side) return false;
+      const pe = entryOf(p);
+      if (!Number.isFinite(pe) || Math.abs(pe - oEntry) > tol) return false;
+      const pOpen = p.ts_open ? new Date(p.ts_open).getTime() : 0;
+      const pClose = p.ts_close ? new Date(p.ts_close).getTime() : now;
+      return oClose >= pOpen - TOL_MS && oClose <= pClose + TOL_MS;
+    });
+    if (cands.length !== 1) continue; // 0 ou ambigu -> on NE replie PAS (conservateur)
+    const p = cands[0];
+    Object.assign(p, foldGroupIntoClosedParent(p, {
+      entry: oEntry, avgExit: Number(o.avg_exit) || oEntry,
+      qty: Number(o.size) || 0, pnl: Number(o.realized_pnl) || 0, fees: Number(o.fees) || 0,
+    }));
+    // garder la cloture la plus tardive des deux fragments
+    if (new Date(o.ts_close || 0).getTime() > new Date(p.ts_close || 0).getTime()) p.ts_close = o.ts_close;
+    removeIds.add(o.id);
+    merges.push({ orphan: o.id, parent: p.id, net: p.net_pnl });
+  }
+  return { trades: list.filter((t) => !removeIds.has(t.id)), merges };
+}
+
 module.exports = {
   baseSym, isLadder, ladderEnvelope, inEnvelope,
   findLadderParent, aggregateGroups, foldGroupIntoClosedParent, claimLadderFills,
+  claimScaleOutFills, foldOrphansIntoParents,
 };

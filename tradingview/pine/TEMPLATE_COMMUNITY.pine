@@ -4,7 +4,7 @@
 // Style d'exemple : breakout Donchian avec filtres activables + sizing risque.
 // Remplacer la SECTION "SIGNAUX" par la logique voulue ; tout le reste est réutilisable.
 // ════════════════════════════════════════════════════════════════════════
-strategy("Template Community-Grade []", overlay=true,
+strategy("Template Community-Grade [IntegrAI]", overlay=true,
      initial_capital         = 100000,
      pyramiding              = 0,
      process_orders_on_close = true,

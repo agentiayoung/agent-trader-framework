@@ -47,7 +47,7 @@ async function fetchDeep(c, sym, tf, days) {
   out.sort((a, b) => a[0] - b[0]);
   return out;
 }
-const MAX_HOLD = 60, COOLDOWN = 8;
+const MAX_HOLD = +(process.env.OPT_MAXHOLD || 60), COOLDOWN = 8; // OPT_MAXHOLD : sweep time-stop (barres 4h, audit duree 30.06)
 // ── RANDOM-CONTROL (pattern Vibe-Trading run_bench_strict, verdict scraping 10.06) ──
 // Baseline d'entrées ALÉATOIRES même-univers / mêmes exits / mêmes frais : un candidat doit
 // BATTRE le random, pas juste être >0 (le drift du marché + l'optimisation d'exits peuvent
@@ -81,7 +81,7 @@ const CPCV = process.env.OPT_CPCV === "1"; // validation robuste (CPCV-light + D
 // ecrase TOUT. Le multiple-testing pertinent = seulement les VRAIS candidats qui pourraient passer
 // (ou rester) LIVE, pas les diagnostics. nTrials du DSR = ce sous-ensemble. Les autres restent
 // calcules (preuve/controle) mais NE comptent PAS dans la deflation. Allowlist = playbook + sprint courant.
-const CANDIDATE = /^(S1_short_bounce|S2_short_continuation|S2_long_continuation|S3_long_oversold|S5_fade_range|S12_squeeze_break|MR8_MTF|MR4_bb_trendfilt|MR8_laddered|S1_MTF_laddered|S2_laddered|FVG_cont|FVG_cont_short|FVG_react|FVG_disp)$/;
+const CANDIDATE = /^(S1_short_bounce|S2_short_continuation|S2_long_continuation|S3_long_oversold|S5_fade_range|S12_squeeze_break|MR8_MTF|MR8_MTF_extreme|MR4_bb_trendfilt|MR8_laddered|S1_MTF_laddered|S2_laddered|FVG_cont|FVG_cont_short|FVG_react|FVG_disp|S_long_dip_bull|S_long_break_bull)$/;
 
 // Grille de sorties (multiples d'ATR). tp=99 = pas de TP fixe (trailing seul).
 const SLs = [1.0, 1.5, 2.0, 2.5];
@@ -150,7 +150,7 @@ function supertrend(H, L, C, p = 10, mult = 3) {
 // détecte les signaux (entrées) de chaque setup sur une paire
 // dAdx (optionnel) = ADX DAILY de la paire mappé sur les barres 4H -> taggue le RÉGIME
 // de chaque signal (range/trending/strong) pour le split d'expectancy par régime (piste 5a).
-function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
+function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50, dGold, dAdxUp) {
   const rsi = rsiS(C), e20 = emaS(C, 20), e50 = emaS(C, 50), e200 = emaS(C, 200), atr = atrS(H, L, C), md = macdS(C), st = supertrend(H, L, C, 10, 3);
   const adxObj = adxS(H, L, C, 14), adx = adxObj.adx, pdi = adxObj.pdi, mdi = adxObj.mdi;
   const sigs = {}; const lastBar = {};
@@ -174,21 +174,21 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
   // (12 bars) · e_confirm = retournement StochRSI (6 bars). Pendings par variante.
   let s6Pend = []; // {kind, side, i0, level(retrace), expiry}
   let srsiPrev = null;
-  // ==== SPRINT #7 (10.06 soir, brainstorm the maintainer) : entrée échelonnée + qualité des plus bas ====
+  // ==== SPRINT #7 (10.06 soir, brainstorm Hugo) : entrée échelonnée + qualité des plus bas ====
   // laddered = 3 tranches T1/T2/T3 (signal / −0.5 / −1.0×ATR, fenêtre 6 bars, entrée = moyenne
   // des remplies) · lvl_fresh = swing 30b peu testé (touches ≤2 sur 60b) · lvl_wick = swing
   // marqué par une mèche de rejet ≥50% · lvl_worn (diagnostic) = swing usé (touches ≥4).
   let s7Pend = []; // {side, i0, t2, t3, expiry, fills:[t1] (+t2,t3 quand touchés)}
-  // SPRINT #8 (test 10.06, demande the maintainer) : laddered sur setups de TENDANCE (S1/S2), pas seulement MR.
+  // SPRINT #8 (test 10.06, demande Hugo) : laddered sur setups de TENDANCE (S1/S2), pas seulement MR.
   // Meme mecanique que MR8_laddered (T1 signal / T2 +0.5xATR / T3 +1.0xATR, fenetre 6 bars,
   // entree = moyenne des tranches remplies). MEME signal que la baseline -> SEULE l'entree change.
   let trendLad = []; // {name, side, t2, t3, expiry, fills:[t1]}
-  // TEST A2 (10.06, brainstorm the maintainer : market/limit pour rejoindre les limites) : comparer
+  // TEST A2 (10.06, brainstorm Hugo : market/limit pour rejoindre les limites) : comparer
   // 3 politiques d'entree sur S1/S2 — laddered (T1 au signal, deja teste sprint #8) vs
   // bounceonly (TOUS les rungs au-DESSUS du prix = style ASTER live, RIEN si pas de rebond)
   // vs bounce_cont (bounceonly + entree de CONTINUATION au close de fenetre si 0 fill = idee A2).
   let trendBounce = []; // {base('S1'|'S2'), side, t1, t2, t3, expiry, fills:[]}
-  // ==== SPRINT FVG (16.06, demande the maintainer) : Fair Value Gaps (design committe AVANT run) ====
+  // ==== SPRINT FVG (16.06, demande Hugo) : Fair Value Gaps (design committe AVANT run) ====
   // pendings limit FVG : {name, side, level, expiry}. Filles a j>i quand le niveau est touche.
   let fvgPend = [];
   for (let i = 205; i < C.length - 1; i++) {
@@ -265,12 +265,22 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
     // MR8 + daily : ne short que si daily baissier, ne long que si daily haussier
     if (srsi < 0.15 && db === true) push("MR8_MTF", i, "long");
     if (srsi > 0.85 && db === false) push("MR8_MTF", i, "short");
-    // ==== SPRINT 15.06 (the maintainer : gate directionnel + rapide) : MEME signal MR8 (srsi<0.15), gate LONG
+    // ==== EDGE-SPRINT 25.06 (leaders Hyperliquid, M007/D055) — entree-extremite de la MR ====
+    // Les leaders swing fadent au BORD du range (dip-buy/fade-high). On exige que la MR8 alignee
+    // entre AU BORD du Donchian-20 (tol 0.5xATR), transfert du levier d'extremite D050 (scalp) au 4h.
+    {
+      let dHi = -Infinity, dLo = Infinity;
+      for (let j = i - 20; j < i; j++) { if (H[j] > dHi) dHi = H[j]; if (L[j] < dLo) dLo = L[j]; }
+      const tol = 0.5 * atr[i];
+      if (srsi < 0.15 && db === true && px <= dLo + tol) push("MR8_MTF_extreme", i, "long");
+      if (srsi > 0.85 && db === false && px >= dHi - tol) push("MR8_MTF_extreme", i, "short");
+    }
+    // ==== SPRINT 15.06 (Hugo : gate directionnel + rapide) : MEME signal MR8 (srsi<0.15), gate LONG
     // assoupli de EMA200d (db) vers EMA50d (db50). Design committe AVANT run. Zero impact live. ====
     const db50 = dBull50 ? dBull50[i] : null;
     if (srsi < 0.15 && db50 === true) push("MR8_long_d50", i, "long");                  // gate rapide (px>EMA50d)
     if (srsi < 0.15 && db50 === true && db === false) push("MR8_long_recov", i, "long"); // zone de reprise que l'EMA200 bloque
-    // ==== SPRINT 15.06 #2 (the maintainer : famille MOMENTUM bidirectionnelle) — design committe AVANT run ====
+    // ==== SPRINT 15.06 #2 (Hugo : famille MOMENTUM bidirectionnelle) — design committe AVANT run ====
     const rngHL = H[i] - L[i];
     if (atr[i] > 0 && rngHL > 1.8 * atr[i]) {               // MOM_thrust : poussee de volatilite, close en quartile extreme
       const posC = rngHL > 0 ? (C[i] - L[i]) / rngHL : 0.5;
@@ -281,7 +291,24 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
     const bearNow = px < e200[i] && e50[i] < e200[i], bearPrev = C[i - 1] < e200[i - 1] && e50[i - 1] < e200[i - 1];
     if (bullNow && !bullPrev) push("MOM_stack_flip", i, "long");   // bascule FRAICHE de la structure EMA -> long
     if (bearNow && !bearPrev) push("MOM_stack_flip", i, "short");  // bascule fraiche bear -> short
-    // ==== SPRINT FVG (16.06, demande the maintainer) — design committe AVANT run (docs/plans/2026-06-16-edge-sprint-fvg-design.md) ====
+    // ==== SPRINT 22.06 (long4h, demande Hugo) — design committe AVANT run (docs/plans/2026-06-22-edge-sprint-long4h-design.md) ====
+    // Trou : l'agent 4h n'a AUCUN edge LONG de TENDANCE (short-dominant). 2 candidats LONG gates DUR
+    // sur un daily BULL-TRENDING complet : db (px>EMA200d) ET dGold (golden cross EMA50d>EMA200d) ET
+    // dAdxUp (ADX daily MONTANT). Mesures sur le bucket bull-trending via test_by_regime/train_by_regime.
+    // Anti-look-ahead : signal sur barre CLOSE (px=C[i]), jamais sur le wick courant. LIMIT-compatible.
+    const dgold = dGold ? dGold[i] : null, daup = dAdxUp ? dAdxUp[i] : null;
+    const bullTrendD = db === true && dgold === true && daup === true; // gate bull-trending daily
+    if (bullTrendD) {
+      // C1 S_long_dip_bull : pullback PROFOND vers EMA50 4H (|px-e50|<0.5% = bien plus profond que
+      // l'EMA20 superficiel de S4/S7) + rsi<50 (repli) + reclaim amorce (close haussiere OU MACD histo up).
+      const deepDip = Math.abs(px - e50[i]) / px < 0.005;
+      const reclaimNow = C[i] > O[i] || ((md.line[i] - md.sig[i]) > (md.line[i - 1] - md.sig[i - 1]));
+      if (deepDip && rsi[i] < 50 && reclaimNow) push("S_long_dip_bull", i, "long");
+      // C2 S_long_break_bull : cassure Donchian-20 LONG-only + volR>1.3, gatee daily-bull-trending
+      // (!= S8 breakout bidirectionnel non-gate). NOTE verdict : meme signal brut que le cote long de S8.
+      if (px > donHi && volR > 1.3) push("S_long_break_bull", i, "long");
+    }
+    // ==== SPRINT FVG (16.06, demande Hugo) — design committe AVANT run (docs/plans/2026-06-16-edge-sprint-fvg-design.md) ====
     // FVG 3-bougies = gap d'imbalance laisse par une bougie de displacement (i-1) :
     //   bull : L[i] > H[i-2] (gap up) ; bear : H[i] < L[i-2] (gap down). displacement = range(i-1)>1.2*ATR + corps directionnel.
     // C1 FVG_cont  : continuation, LIMIT retrace au 50% du gap, aligne daily, sens du displacement (LE modele).
@@ -309,7 +336,7 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
       const shallow = L[i] - 0.25 * gap;                                   // retrace COURT (25% dans le gap depuis le haut) = pres du momentum
       if (db === true) {
         fvgPend.push({ name: "FVG_cont", side: "long", level: mid, expiry: i + 6 });
-        // FVG_cont_short (16.06, pre-enregistre pour RE-TEST futur, demande the maintainer) : retrace COURT
+        // FVG_cont_short (16.06, pre-enregistre pour RE-TEST futur, demande Hugo) : retrace COURT
         // 25% + fenetre serree (4 barres) = tenter de capter le momentum de deplacement (l'edge
         // trouve dans FVG_disp) en restant LIMIT-compatible (B1), la ou le retrace 50% l'a rate.
         fvgPend.push({ name: "FVG_cont_short", side: "long", level: shallow, expiry: i + 4 });
@@ -517,7 +544,7 @@ function detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, rng, dBull50) {
     if (bull && rsi[i] >= 38 && rsi[i] <= 52 && rising && Math.abs(px - e20[i]) / px < 0.025 && db === true) push("S7_MTF", i, "long");
     if (px > donHi && volR > 1.3 && db === true) push("S8_MTF", i, "long");
     if (px < donLo && volR > 1.3 && db === false) push("S8_MTF", i, "short");
-    // ==== SPRINT #2 (10.06, idées the maintainer) : S/R & breakout PAR TENDANCE — recherche, pas live ====
+    // ==== SPRINT #2 (10.06, idées Hugo) : S/R & breakout PAR TENDANCE — recherche, pas live ====
     // S10 breakdown-RETEST : on ne court PAS après la cassure (S8 market = artefact + taker) ;
     // on attend le RETEST du niveau cassé (support devenu résistance) = entrée LIMIT/maker.
     if (px < donLo) { s10BkdnI = i; s10BkdnLvl = donLo; }
@@ -643,7 +670,7 @@ async function run() {
     const O = oh.map((x) => x[1]), H = oh.map((x) => x[2]), L = oh.map((x) => x[3]), C = oh.map((x) => x[4]), V = oh.map((x) => x[5]);
     // DAILY (timeframe superieur) pour l'alignement MTF — biais = close > EMA200 daily, sans lookahead
     // + ADX DAILY mappé sur les barres 4H -> régime de chaque signal (split par régime, piste 5a).
-    let dBull = null, dAdx = null, dBull50 = null;
+    let dBull = null, dAdx = null, dBull50 = null, dGold = null, dAdxUp = null;
     try {
       const dOh = await c.fetchOHLCV(s + "/USDT:USDT", "1d", undefined, 400);
       if (dOh && dOh.length > 50) {
@@ -653,8 +680,13 @@ async function run() {
         dBull = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dC[k] > dE[k] : null; });
         dBull50 = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dC[k] > dE50[k] : null; }); // gate daily RAPIDE (EMA50d) — sprint 15.06
         dAdx = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dAdxArr[k] : null; });
+        // ==== SPRINT 22.06 (long4h) : gate BULL-TRENDING daily ====
+        // dGold = golden cross daily (EMA50d > EMA200d) ; dAdxUp = ADX daily MONTANT (vs jour CLOS precedent).
+        // Sans lookahead (jour k = dernier jour clos avant la barre 4H ; comparaison k vs k-1).
+        dGold = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 0 ? dE50[k] > dE[k] : null; });
+        dAdxUp = oh.map((bar) => { const k = idxAt(bar[0]); return k >= 1 ? dAdxArr[k] > dAdxArr[k - 1] : null; });
       }
-    } catch (e) { dBull = null; dAdx = null; dBull50 = null; }
+    } catch (e) { dBull = null; dAdx = null; dBull50 = null; dGold = null; dAdxUp = null; }
     // WEEKLY (macro) : biais = close > EMA20 weekly, sans lookahead
     let wBull = null;
     try {
@@ -667,7 +699,7 @@ async function run() {
     // Mapping macro BTC -> barres 4H de CETTE paire (même pattern sans-lookahead que dBull/wBull).
     const mAdx = btcTs ? oh.map((bar) => { const k = macroIdxAt(bar[0]); return k >= 0 ? btcAdxArr[k] : null; }) : null;
     const mBull = btcTs ? oh.map((bar) => { const k = macroIdxAt(bar[0]); return k >= 0 ? btcBullArr[k] : null; }) : null;
-    const { sigs } = detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, mulberry32(strSeed(s + "|" + TF)), dBull50);
+    const { sigs } = detect(O, H, L, C, V, dBull, wBull, dAdx, mAdx, mBull, mulberry32(strSeed(s + "|" + TF)), dBull50, dGold, dAdxUp);
     const e20arr = emaS(C, 20);   // EMA20 4H pour la politique cut_flip (sprint hold-vs-cut)
     for (const [setup, list] of Object.entries(sigs)) {
       allSigs[setup] = allSigs[setup] || [];
@@ -806,3 +838,10 @@ module.exports = run;
 module.exports.mulberry32 = mulberry32;
 module.exports.strSeed = strSeed;
 module.exports.sideMatchedBaseline = sideMatchedBaseline;
+// Internes exposés (additif) pour le harnais de recherche multi-leg exit-research.js (29.06).
+// Aucun changement de comportement : detect/sim/run inchangés, simple ré-export.
+module.exports.detect = detect;
+module.exports.fetchDeep = fetchDeep;
+module.exports.emaS = emaS;
+module.exports.adxS = adxS;
+module.exports.MAX_HOLD = MAX_HOLD;

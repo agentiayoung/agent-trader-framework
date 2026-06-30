@@ -20,7 +20,7 @@ eq(tradeOrigin({ source: "manual", strategy: "DEEP_ACCUM_long" }), "conv",
 eq(tradeOrigin({ origin: "routine_auto", source: "manual" }), "routine_auto",
   "origin explicite > inference (une routine peut logger source:manual en mode -Manual)");
 eq(tradeOrigin({ origin: "routine_manual" }), "routine_manual",
-  "routine declenchee par the maintainer = routine_manual");
+  "routine declenchee par Hugo = routine_manual");
 eq(tradeOrigin({ origin: "conv" }), "conv", "origin:conv explicite preserve");
 
 // ── 3. Orthogonalite track x origin : un trade a les DEUX, independamment ──

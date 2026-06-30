@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 // Tests offline du rail bilateral forward-test (scan.js reclaimEma200d + bottomConfirmed). Zero reseau.
-// Design : docs/plans/2026-06-15-bilateral-forward-test-rail-design.md (approved 15.06).
+// Design : docs/plans/2026-06-15-bilateral-forward-test-rail-design.md (GO Hugo 15.06).
 // Le rail prend un LONG (track:experiment, tier D) UNIQUEMENT sur un BOTTOM CONFIRME :
 //   bull_div_at_low>=1 ET decoupled_from_btc>=1 ET reclaim_ema200d>=1 (la sequence de bottom complete).
 // Anti-dead-cat : un simple relief_rally (rebond court) ne suffit PAS.

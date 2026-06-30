@@ -36,7 +36,7 @@
   <Actions Context="Author">
     <Exec>
       <Command>powershell.exe</Command>
-      <Arguments>-ExecutionPolicy Bypass -WindowStyle Hidden -File "<PROJECT_ROOT>\routines\health-check.ps1" -Digest</Arguments>
+      <Arguments>-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\admin\Desktop\DEV CLAUDE CODE\projets\agent-trader\routines\health-check.ps1" -Digest</Arguments>
     </Exec>
   </Actions>
 </Task>

@@ -1,6 +1,6 @@
 //@version=6
 // ════════════════════════════════════════════════════════════════════════
-// INDICATEURS LIB —  Agent Trader
+// INDICATEURS LIB — IntegrAI Agent Trader
 // ════════════════════════════════════════════════════════════════════════
 // Version   : 1.0.0
 // Source    : tradingview/pine/indicateurs_lib.pine
@@ -18,7 +18,7 @@
 //   signal_trend_channels() → Linear regression channel macro/micro signals
 //   signal_vwap()           → Session VWAP band retest signals
 // ════════════════════════════════════════════════════════════════════════
-library("IndicateursLib_", overlay = true)
+library("IndicateursLib_IntegrAI", overlay = true)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. AI SIGNAL — Keltner-based Supertrend crossover

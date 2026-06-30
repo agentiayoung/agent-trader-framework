@@ -25,7 +25,7 @@ trade-journal/  (JOURNAL.md + LESSONS.md + trades.jsonl)  →  données d'améli
 n'aurait pas les clés → ne pourrait pas exécuter.
 
 ## Plages horaires (haute volatilité)
-Configurables dans `register-tasks.ps1`. Actuel (heure de ) — **4 sessions/jour** :
+Configurables dans `register-tasks.ps1`. Actuel (heure de Genève) — **4 sessions/jour** :
 - **02:07** — daily close (00:00 UTC) + funding
 - **06:37** — séance Asie
 - **14:03** — pré-US / Londres

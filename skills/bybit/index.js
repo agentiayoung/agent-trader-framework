@@ -343,16 +343,28 @@ async function bybit_place_limit_bracket({ symbol, side, amount, entry_px, stop_
   const c = await ensureReady();
   await c.loadMarkets();
   await ensureIsolatedMargin(c, sym); // marge ISOLEE par position (idempotent), avant tout ordre
-  const results = [];
+  const results = [], deferred_tps = [];
   for (const o of plan) {
     const amt = c.amountToPrecision(sym, o.amount);
     const px = o.price !== undefined ? c.priceToPrecision(sym, o.price) : undefined;
     const params = { ...o.params };
     if (params.triggerPrice !== undefined) params.triggerPrice = c.priceToPrecision(sym, params.triggerPrice);
-    const r = await c.createOrder(sym, o.type, o.side, amt, px, params);
-    results.push({ role: o.role, px: o.px, id: r.id });
+    try {
+      const r = await c.createOrder(sym, o.type, o.side, amt, px, params);
+      results.push({ role: o.role, px: o.px, id: r.id });
+    } catch (e) {
+      // ENTREE + SL = OBLIGATOIRES : on propage (jamais de position nue). Mais un TP refuse par Bybit
+      // AVANT le fill (110093 : trigger du mauvais cote du prix courant, cas d'un fade limit ou le TP
+      // est au-dela du prix actuel) est DIFFERE au fill (la position reste protegee par le SL ; la
+      // detection missing_tp re-posera le TP une fois la position remplie). Evite le bracket partiel
+      // orphelin (entree+SL sans TP qui throw) = racine des "trades sans TP" cote radar/auto.
+      const msg = (e && e.message) || String(e);
+      const deferrable = o.role === "tp" && /110093|trigger|Falling|Rising|expect/i.test(msg);
+      if (deferrable) { deferred_tps.push({ px: o.px, amount: o.amount, reason: msg.slice(0, 140) }); continue; }
+      throw e;
+    }
   }
-  return { submitted: true, ...summary, results };
+  return { submitted: true, ...summary, results, deferred_tps };
 }
 
 // ═══════════════════════════════════════════════════════════════════

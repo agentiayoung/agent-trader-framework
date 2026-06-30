@@ -1,6 +1,6 @@
 "use strict";
 // ═══════════════════════════════════════════════════════════════════
-// fillmodel.js — modele de remplissage d'ordres LIMIT maker (#2 fondation, approved 16.06).
+// fillmodel.js — modele de remplissage d'ordres LIMIT maker (#2 fondation, GO Hugo 16.06).
 //
 // PUR, deterministe, testable offline. Supprime le biais "prix touche = ordre rempli" du backtest
 // (critique par la microstructure : queue position + adverse selection). Reponse a B4/B6/O1.

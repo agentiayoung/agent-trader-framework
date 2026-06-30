@@ -1,6 +1,6 @@
 //@version=6
 // ════════════════════════════════════════════════════════════════════════
-// MASTER AGGREGATOR —  Agent Trader
+// MASTER AGGREGATOR — IntegrAI Agent Trader
 // ════════════════════════════════════════════════════════════════════════
 // Version  : 1.0.0
 // Source   : tradingview/indicateurs/master_aggregator.pine
@@ -17,7 +17,7 @@
 //   [6] Trend Channels   — LR channel macro/micro signals
 //   [7] Session VWAP     — Band retest (bounce/rejection)
 // ════════════════════════════════════════════════════════════════════════
-strategy("Master Aggregator []", overlay=true,
+strategy("Master Aggregator [IntegrAI]", overlay=true,
      initial_capital=100000, default_qty_type=strategy.percent_of_equity,
      default_qty_value=10, commission_type=strategy.commission.percent,
      commission_value=0.05, slippage=2,

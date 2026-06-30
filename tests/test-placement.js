@@ -16,6 +16,7 @@ ok("floor inconnu = 1", floorAtr("XYZ") === 1);
 const s = buildPlacement({
   side: "short", setup: "MR8_MTF", entry_zone: 0.768, atr: 0.0198, risk_usd: 1200,
   overshoot_zones: [0.78, 0.80, 0.82], target_levels: [0.749, 0.731, 0.691], swing: 0.7805,
+  exit_a2: false, // ce bloc teste le profil P0 historique (3 paliers) ; A2 teste plus bas
 });
 ok("3 rungs", s.rungs.length === 3);
 ok("R1 = bout de la resistance (entry_zone)", s.rungs[0].entry === 0.768);
@@ -36,7 +37,35 @@ ok("R3 (profond) = 3 paliers quick/main/runner", s.rungs[2].take_profits.length 
 ok("R1/R2 (non profonds) = 2 paliers quick/main", s.rungs[0].take_profits.length === 2 && s.rungs[1].take_profits.length === 2
   && near(s.rungs[0].take_profits[1].px, s.tp_zones.main_before_support));
 ok("fracs somment a 1 sur chaque rung", s.rungs.every(r => near(r.take_profits.reduce((a, t) => a + t.frac, 0), 1)));
+// SECURISE TOT (22.06) : TP1 petit (10-25%) + proche, TP2 conséquent, runner = reste.
+ok("TP1 = petit partiel rapide (10-25%, defaut 20%)", s.rungs[0].take_profits[0].frac >= 0.10 && s.rungs[0].take_profits[0].frac <= 0.25);
+ok("R3 deep : TP2 conséquent (>= TP1) + runner = reste", s.rungs[2].take_profits[1].frac >= s.rungs[2].take_profits[0].frac && near(s.rungs[2].take_profits.reduce((a,t)=>a+t.frac,0),1));
+ok("env-tunable : PLACE_TP1_FRAC override", (() => { process.env.PLACE_TP1_FRAC="0.15"; const z=buildPlacement({side:"short",setup:"S1_MTF",entry_zone:50,atr:1,risk_usd:600}); delete process.env.PLACE_TP1_FRAC; return near(z.rungs[0].take_profits[0].frac,0.15); })());
 ok("TP tous SOUS l'entree (short valide)", s.rungs.every(r => r.take_profits.every(t => t.px < r.entry)));
+
+// ── PROFIL A2 (29.06, OOS valide MR8) : mean-reversion -> 2 paliers, PAS de micro-quick ──
+const a2 = buildPlacement({
+  side: "short", setup: "MR8_MTF", entry_zone: 0.768, atr: 0.0198, risk_usd: 1200,
+  overshoot_zones: [0.78, 0.80, 0.82], target_levels: [0.749, 0.731, 0.691], swing: 0.7805,
+  exit_a2: true,
+});
+ok("A2 : exit_profile = A2_2leg", a2.exit_profile === "A2_2leg");
+ok("A2 : rung profond = 2 paliers (main+runner, PAS de quick)", a2.rungs[2].take_profits.length === 2
+  && near(a2.rungs[2].take_profits[0].px, a2.tp_zones.main_before_support) && near(a2.rungs[2].take_profits[1].px, a2.tp_zones.runner_beyond_support));
+ok("A2 : rungs non profonds = 1 palier (main 100%)", a2.rungs[0].take_profits.length === 1 && a2.rungs[1].take_profits.length === 1
+  && near(a2.rungs[0].take_profits[0].px, a2.tp_zones.main_before_support));
+ok("A2 : 1er palier = MAIN (pas un micro-quick)", near(a2.rungs[0].take_profits[0].px, a2.tp_zones.main_before_support));
+ok("A2 : split deep = main 60% / runner 40%", near(a2.rungs[2].take_profits[0].frac, 0.60) && near(a2.rungs[2].take_profits[1].frac, 0.40));
+ok("A2 : fracs somment a 1", a2.rungs.every(r => near(r.take_profits.reduce((x, t) => x + t.frac, 0), 1)));
+ok("A2 : aucun palier a frac 0 (Bybit ne rejette pas)", a2.rungs.every(r => r.take_profits.every(t => t.frac > 0)));
+
+// A2 routé par ARCHETYPE : la TENDANCE (S1/S2/S12) garde P0 (3 paliers) meme avec exit_a2:true.
+const trendA2 = buildPlacement({ side: "short", setup: "S1_short_bounce", entry_zone: 50, atr: 1, risk_usd: 600, exit_a2: true });
+ok("A2 ignore la TENDANCE (S1 garde P0 3 paliers)", trendA2.exit_profile === "P0_3leg" && trendA2.rungs[2].take_profits.length === 3);
+
+// defaut ENV : A2 actif pour mean-rev sauf AGENT_EXIT_A2=0
+ok("defaut : MR8 sans flag = A2 (env defaut ON)", (() => { delete process.env.AGENT_EXIT_A2; return buildPlacement({ side: "short", setup: "MR8_MTF", entry_zone: 50, atr: 1, risk_usd: 600 }).exit_profile === "A2_2leg"; })());
+ok("reversible : AGENT_EXIT_A2=0 -> P0 partout", (() => { process.env.AGENT_EXIT_A2 = "0"; const z = buildPlacement({ side: "short", setup: "MR8_MTF", entry_zone: 50, atr: 1, risk_usd: 600 }); delete process.env.AGENT_EXIT_A2; return z.exit_profile === "P0_3leg"; })());
 ok("n_stops = 10 (3 SL + 2+2+3 TP, cap Bybit)", s.n_stops === 10);
 // risque EGAL par rung, total = budget
 const totalRisk = s.rungs.reduce((a, r) => a + r.size * Math.abs(s.sl - r.entry), 0);
@@ -62,7 +91,7 @@ const f = buildPlacement({ side: "short", setup: "S1_MTF", entry_zone: 50, atr: 
 ok("fallback: 3 rungs en +0.5xATR", f.rungs[1].entry === 50.5 && f.rungs[2].entry === 51);
 ok("fallback: marque fallback_used", f.fallback_used === true);
 ok("fallback: SL >= floor S1 1.5xATR", f.sl_dist_closest_atr >= 1.5 - 0.02);
-ok("fallback: TP ATR (quick 0.7x/main 2x/runner 3x sous l'entree)", near(f.tp_zones.quick, 49.3) && f.tp_zones.main_before_support === 48 && f.tp_zones.runner_beyond_support === 47);
+ok("fallback: TP ATR (quick 0.2x/main 2x/runner 3x sous l'entree)", near(f.tp_zones.quick, 49.8) && f.tp_zones.main_before_support === 48 && f.tp_zones.runner_beyond_support === 47);
 ok("fallback: warning targets manquants", f.warnings.some(w => /target/.test(w)));
 
 // ── garde-fous d'input ──

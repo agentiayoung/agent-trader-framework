@@ -72,7 +72,7 @@ function atrFrom(ohlc, p) {
   return +(sum / n).toFixed(8);
 }
 // priceActionRow : rend un actif a HISTORIQUE COURT tradable sur PRICE ACTION PURE en DEMO_ACTIVE
-// (approved 16.06 : toutes les paires tradables en demo, SPCX inclus). Pas de setup a edge valide ->
+// (GO Hugo 16.06 : toutes les paires tradables en demo, SPCX inclus). Pas de setup a edge valide ->
 // le LLM lit la STRUCTURE (swing hi/lo, ATR, EMA20, momentum) et construit un bracket price-action.
 // L'integrite (SL/geometrie/sizing) protege chaque trade. 100% pur.
 function priceActionRow(entry, h4, h1, ticker, sessOpen) {
@@ -98,7 +98,7 @@ function bb(c, p = 20, k = 2) { const m = sma(c, p); let s = 0; for (let i = c.l
 function donchian(h, l, p = 20) { const i = h.length - 1; return { hi: Math.max(...h.slice(i - p, i)), lo: Math.min(...l.slice(i - p, i)) }; } // exclut la bougie courante
 // CONTEXTE CYCLE (lentille MACRO, pure + OBSERVABILITE) : ou est le prix dans son range pluriannuel ?
 // L'angle mort du bot = il lit le 4H/Daily mais ignore la position dans le cycle. Repond au risque
-// "short de fin de tendance" (the maintainer 11.06) : shorter a range_pos bas + low FRAIS = fader dans une zone
+// "short de fin de tendance" (Hugo 11.06) : shorter a range_pos bas + low FRAIS = fader dans une zone
 // d'accumulation generationnelle (mesure 11.06 : DOT/AVAX/ADA au plus bas ~2.7 ans, imprime il y a 5j,
 // SOUS leurs lows 2022 ; BTC encore a 37% du range). ohlc = OHLCV daily long (~1000 barres dispo Bybit).
 function cycleContext(ohlc) {
@@ -263,9 +263,9 @@ async function scan() {
       ]);
       // Histo insuffisant pour des indicateurs fiables (perp recemment liste : SPY/QQQ ~34-41d au 16.06).
       // On NE calcule pas (eviterait des indicateurs faux) mais on rend une row VISIBLE (pas un vanish
-      // silencieux) -> the maintainer voit "pending history" ; s'active tout seul quand l'histo grossit (~>=60d).
+      // silencieux) -> Hugo voit "pending history" ; s'active tout seul quand l'histo grossit (~>=60d).
       if (d1.length < 60 || h4.length < 60) {
-        // DEMO_ACTIVE (approved 16.06 : TOUTES les paires tradables en demo, SPCX inclus) -> au lieu de
+        // DEMO_ACTIVE (GO Hugo 16.06 : TOUTES les paires tradables en demo, SPCX inclus) -> au lieu de
         // dropper, on rend une ROW PRICE-ACTION (structure recente + ATR) : l'actif est tradable sur
         // price action pure (le LLM lit le mouvement). Hors demo -> row "pending history" (observabilite).
         if (process.env.DEMO_ACTIVE) {
@@ -389,7 +389,7 @@ async function scan() {
   const fearGreed = await fngP; // null si HS — observabilite, jamais un gate
   // BOTTOM_WATCH (lentille MACRO/cycle, OBSERVABILITE — jamais un gate) : detecter qu'on approche d'un
   // bottom AVANT que le bot ne continue de shorter en zone d'accumulation (risque "short de fin de
-  // tendance", the maintainer 11.06). Agrege la position-cycle des 19 paires. NE force AUCUNE decision : informe.
+  // tendance", Hugo 11.06). Agrege la position-cycle des 19 paires. NE force AUCUNE decision : informe.
   const valid = rows.filter((r) => !r.error && r.cycle);
   const atLow = valid.filter((r) => r.cycle.at_cycle_low);              // bas du range pluriannuel + low frais = accumulation
   const reclaim = valid.filter((r) => r.reclaim_d50);                   // breadth de reclaim EMA50 daily = thrust de retournement
@@ -428,7 +428,7 @@ async function scan() {
   // SUI = 5x -1R en jours). Complement MARCHE-LARGE de la lentille cycle (qui, elle, est PAR NOM).
   // Quand actif -> SKIP DUR des NOUVEAUX fade-shorts (MR8/S1/S5 short). cf. SOP + run-routine.ps1.
   bottom_watch.relief_rally = reliefRally(bottom_watch);
-  // BOTTOM CONFIRME (rail bilateral 15.06, approved) : la sequence de bottom est-elle COMPLETE
+  // BOTTOM CONFIRME (rail bilateral 15.06, GO Hugo) : la sequence de bottom est-elle COMPLETE
   // (bull_div_at_low>=1 ET decoupled>=1 ET reclaim_ema200d>=1) ? = le SEUL contexte ou l'agent prend
   // un LONG en track:experiment + tier D (taille reduite) pour collecter la donnee long LIVE que le
   // backtest ne peut pas fournir. ANTI-DEAD-CAT : un relief_rally seul ne suffit PAS. Cf. SOP Etape 5.
@@ -461,7 +461,7 @@ if (require.main === module) {
     console.log(JSON.stringify({ scanned: r.scanned, market: r.market, opportunities: r.opportunities, perception_candidates: r.perception_candidates, price_action_tradable: r.price_action_tradable }, null, 2));
   }).catch((e) => { console.error(e.message); process.exit(1); });
 }
-// reliefRally : detecteur PUR "grosse chute qui bottom/rebondit" (audit 12-15.06, approved).
+// reliefRally : detecteur PUR "grosse chute qui bottom/rebondit" (audit 12-15.06, GO Hugo).
 // Shorter APRES une grosse chute en train de bottomer = mauvaise approche (5x -1R prouves).
 // ACTIF = Extreme Fear + alt_capitulation + breadth de reclaim EMA50d >= seuil (le marche a
 // chute fort ET rebondit largement). Quand actif -> la SOP SKIP DUR les NOUVEAUX fade-shorts.
@@ -486,7 +486,7 @@ function reliefRally(bw, opts) {
 
 // reclaimEma200d : le px vient de repasser AU-DESSUS de l'EMA200 daily (CROISEMENT RECENT, <= lookback
 // barres) = la condition DURABLE du retournement de tendance (!= reclaim_d50 = EMA50, trop precoce).
-// Rail bilateral 15.06 (approved). PUR, testable offline. ACTIF seulement si : px AU-DESSUS de l'EMA200d
+// Rail bilateral 15.06 (GO Hugo). PUR, testable offline. ACTIF seulement si : px AU-DESSUS de l'EMA200d
 // maintenant ET une close daily etait SOUS l'EMA200d dans les N dernieres barres (reclaim FRAIS, pas une
 // tendance up etablie depuis longtemps). Env: RECLAIM200_LOOKBACK (defaut 10). EMA200 fiable >= 210 barres.
 function reclaimEma200d(dailyCloses, px, lookback) {
@@ -501,7 +501,7 @@ function reclaimEma200d(dailyCloses, px, lookback) {
   return false;                                          // au-dessus depuis trop longtemps -> pas un reclaim frais
 }
 
-// bottomConfirmed : la SEQUENCE DE BOTTOM est-elle COMPLETE ? (rail bilateral 15.06, approved).
+// bottomConfirmed : la SEQUENCE DE BOTTOM est-elle COMPLETE ? (rail bilateral 15.06, GO Hugo).
 // = bull_div_at_low>=1 (alts au plus bas QUI impriment une divergence haussiere = vendeurs epuises)
 //   ET decoupled_from_btc>=1 (des alts cessent de suivre le dump BTC) ET reclaim_ema200d>=1 (la tendance
 //   bascule). Les 3 = le SEUL contexte ou le rail prend un LONG (track:experiment, tier D, taille reduite).
@@ -519,7 +519,7 @@ function bottomConfirmed(bw, opts) {
   return !!(div >= minDiv && dec >= minDecoupled && rec >= minReclaim200);
 }
 
-// dispersion : detecteur de REGIME DE CORRELATION (bilateral L+S, approved 16.06). Le hedge L+S
+// dispersion : detecteur de REGIME DE CORRELATION (bilateral L+S, GO Hugo 16.06). Le hedge L+S
 // simultane est un WASH quand les paires sont correlees (corr 0.82, mesure 15.06) et devient un EDGE
 // quand elles se DECOUPLENT (dispersion). Calcule depuis les beta.corr deja presents. PUR, testable.
 // OBSERVABILITE (jamais un gate dur) : informe quand un hedge L+S est pertinent. Seuils vetoables (env).
@@ -549,7 +549,7 @@ function dispersion(rows) {
   };
 }
 
-// marketPosture : stance REGIME-ADAPTATIVE d'ENTREE (directive live-first 15.06, approved).
+// marketPosture : stance REGIME-ADAPTATIVE d'ENTREE (directive live-first 15.06, GO Hugo).
 // Operationnalise "rampe l'agressivite quand favorable / discipline quand hostile" en un
 // signal de premiere classe. PUR. btcAdx = ADX daily BTC ; bw = bottom_watch.
 //   defensive  = relief_rally actif OU capitulation (fear_extreme + alt_capitulation)

@@ -69,6 +69,7 @@ claudeverstradingview/
 
 # Cache du dernier scan (runtime, regenere a chaque scan.js) — lu par manage-check
 trade-journal/scan-latest.json
+trade-journal/bybit-live.json
 
 # Journal de strategie de l'orchestrateur (runtime append-only, regenere par strategy-log)
 trade-journal/STRATEGY_LOG.md
@@ -78,3 +79,28 @@ trade-journal/proposals/
 
 # Etat persistant du monitoring (runtime, regenere par monitor.js : last_managed_ts par position)
 trade-journal/monitor-state.json
+
+# Intentions armees du radar d'entree (runtime, ecrit par la routine, consomme par entry-radar.js)
+trade-journal/armed-watch.json
+
+# Backups de tooling (clutter)
+*.bak-*
+
+# Runtime temp (scan/preview) — ne pas committer
+scan_tmp.json
+scan_err.txt
+trade-journal/scan_tmp.json
+.playwright-mcp/
+
+# Runtime artefacts (couche alert-driven + scans) — non versionnes
+trade-journal/tv-alerts.jsonl
+trade-journal/tv-alerts.offset
+scan-out.json
+trade-journal/reconcile-status.json
+scan_run.json
+scan_run_err.txt
+
+# Runtime journal + logs operationnels (code-only public)
+trade-journal/trades.jsonl
+trade-journal/JOURNAL.md
+trade-journal/LESSONS.md

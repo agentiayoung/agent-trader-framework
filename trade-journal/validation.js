@@ -1,6 +1,6 @@
 "use strict";
 // ═══════════════════════════════════════════════════════════════════
-// validation.js — validation ROBUSTE des edges (#1 fondation, approved 16.06).
+// validation.js — validation ROBUSTE des edges (#1 fondation, GO Hugo 16.06).
 //
 // PUR, deterministe, testable offline. Reponse a C7/C8/C10/O6 : un split unique 62/38 + 6 mois +
 // N candidats testes/fenetre sous-estime gravement l'overfit (Lopez de Prado) -> une partie des

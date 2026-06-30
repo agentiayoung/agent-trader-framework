@@ -12,7 +12,7 @@
 //   session    : 24x7 | us_equity | metals   (pilote l'observabilite gaps)
 //   tradable   : true => la routine PEUT prendre une position. false => OBSERVABILITE
 //                seulement (scanne, expose, compte dans l'exposition) MAIS jamais trade
-//                tant qu'un edge n'est pas valide OOS+DSR (approved) -> universe.edges[] rempli.
+//                tant qu'un edge n'est pas valide OOS+DSR (GO Hugo) -> universe.edges[] rempli.
 //                Les non-crypto sont tradable:false par defaut (aucun edge valide au 16.06).
 // ════════════════════════════════════════════════════════════════════
 
@@ -62,7 +62,7 @@ function sessionOf(sym) { const e = _bySym.get(sym); return e ? e.session : null
 function enabledEntries() { return REGISTRY.filter((e) => e.enabled !== false); }
 function enabledSymbols() { return enabledEntries().map((e) => e.symbol); }
 function enabledCcxt() { return enabledEntries().map((e) => e.ccxt); }
-// isTradable : la routine PEUT-elle armer cet actif ? En DEMO_ACTIVE (16.06, approved) on teste l'infra
+// isTradable : la routine PEUT-elle armer cet actif ? En DEMO_ACTIVE (16.06, GO Hugo) on teste l'infra
 // sur TOUTES les classes (non-crypto inclus) -> un actif enabled est tradable meme sans edge valide OOS.
 // L'historique suffisant reste gate par le scan (rows insufficient_history -> pas de setup) et la session
 // reste de l'observabilite (gap warn). Hors DEMO_ACTIVE -> seuls les actifs tradable:true (crypto).

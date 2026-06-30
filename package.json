@@ -1,6 +1,6 @@
 {
   "name": "agent-trader",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "A local, LLM-driven paper-trading harness with deterministic risk discipline (Bybit demo).",
   "license": "MIT",
   "type": "commonjs",

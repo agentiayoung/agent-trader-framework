@@ -1,7 +1,7 @@
 "use strict";
 // candles.js — reconnaissance de bougies CONTEXTUELLE PURE (Phase 4, master plan 2026-06-18).
 // Produit le bloc `candles` du contrat docs/SCHEMA-market-state.md.
-// INVARIANT DUR (spec the maintainer) : un pattern n'a de valeur QUE dans une zone pertinente + aligne au biais HTF.
+// INVARIANT DUR (spec Hugo) : un pattern n'a de valeur QUE dans une zone pertinente + aligne au biais HTF.
 //   -> un doji SEUL n'est JAMAIS une confirmation ; une bougie HORS zone -> location_quality ~0.
 // Remplace le score `candle` auto-declare par le LLM (score.js) par une valeur CALCULEE.
 // 100% deterministe, zero reseau. bars = [[ts,o,h,l,c,v],...].

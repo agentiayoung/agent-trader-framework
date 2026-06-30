@@ -6,7 +6,7 @@
 #
 # Usage : powershell -File routines\edge-revalidation.ps1
 $ErrorActionPreference = "Stop"
-$proj = Split-Path -Parent $PSScriptRoot
+$proj = "C:\Users\admin\Desktop\DEV CLAUDE CODE\projets\agent-trader"
 Set-Location $proj
 $logdir = "$proj\routines\logs"; New-Item -ItemType Directory -Force -Path $logdir | Out-Null
 $log = "$logdir\edge-revalidation.log"

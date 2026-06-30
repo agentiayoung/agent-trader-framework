@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 // Tests offline du mode PRICE-ACTION (histo court, DEMO_ACTIVE). Zero reseau.
-// approved 16.06 : toutes les paires tradables en demo (SPCX inclus) -> un actif a histo court rend une
+// GO Hugo 16.06 : toutes les paires tradables en demo (SPCX inclus) -> un actif a histo court rend une
 // row price-action (structure recente + ATR) au lieu d'etre droppe. Le LLM lit le mouvement.
 // Run: node tests/test-price-action.js
 const scan = require("../trade-journal/scan.js");

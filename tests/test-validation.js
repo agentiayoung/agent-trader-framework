@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 "use strict";
-// Tests offline du module de validation robuste (#1 fondation, approved 16.06). Zero reseau.
+// Tests offline du module de validation robuste (#1 fondation, GO Hugo 16.06). Zero reseau.
 // Design : docs/plans/2026-06-16-foundation-validation-fill-design.md (CPCV-light + Deflated Sharpe
 // + null block-bootstrap, reponse a C7/C8/C10/O6 : nos edges "valides" sont peut-etre du bruit).
 // Run: node tests/test-validation.js

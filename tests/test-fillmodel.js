@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 "use strict";
-// Tests offline du modele de fill LIMIT probabiliste (#2 fondation, approved 16.06). Zero reseau.
+// Tests offline du modele de fill LIMIT probabiliste (#2 fondation, GO Hugo 16.06). Zero reseau.
 // Design : docs/plans/2026-06-16-foundation-validation-fill-design.md (anti "touche = rempli", B4/B6/O1).
 // Run: node tests/test-fillmodel.js
 const F = require("../trade-journal/fillmodel.js");

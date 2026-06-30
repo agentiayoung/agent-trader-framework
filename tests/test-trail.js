@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 "use strict";
-// Tests offline du monitoring trend-adaptatif (chantier B, approved 15.06). Zero reseau.
+// Tests offline du monitoring trend-adaptatif (chantier B, GO Hugo 15.06). Zero reseau.
 // Design : docs/plans/2026-06-15-trend-adaptive-trailing-design.md.
 // Laisser COURIR les tendances gagnantes (S1/S2/S3/S12 + S5-trending) via un trail ADAPTATIF
 // dans le verdict running ; les MEAN-REVERSION (MR8/MR4, S5-range) gardent leur TP FIXE.
@@ -30,7 +30,7 @@ ok("S12 = trend", isTrendSetup("S12_squeeze_break") === true);
 ok("MR8 = MR (jamais trend)", isTrendSetup("MR8_stochrsi_revert", { regime_d: "trending" }) === false);
 ok("MR4 = MR (jamais trend)", isTrendSetup("MR4_bb_trendfilt", { regime_d: "strong" }) === false);
 ok("S5 en range = MR (TP fixe)", isTrendSetup("S5_fade_range", { regime_d: "range" }) === false);
-ok("S5 en trending = trend (scope Tous, approved)", isTrendSetup("S5_fade_range", { regime_d: "trending" }) === true);
+ok("S5 en trending = trend (scope Tous, GO Hugo)", isTrendSetup("S5_fade_range", { regime_d: "trending" }) === true);
 ok("S5 en strong = trend", isTrendSetup("S5_fade_range", { regime_d: "strong" }) === true);
 ok("S5 sans regime = MR par defaut (prudent)", isTrendSetup("S5_fade_range", {}) === false);
 

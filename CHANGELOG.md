@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver once past 0.x.
 
+## [0.3.0] — Alert-driven timing, observability dashboard, exit & hold research
+
+Third public snapshot. Still **paper-trading only (Bybit demo)**, research-grade, parameters
+illustrative and almost certainly overfit — re-validate out-of-sample on your own data.
+
+### Alert-driven entry timing (gated, optional)
+- **Self-sourced signal layer (`signal-tick.js`)** — the already-validated detector emits fresh
+  signals to a file queue at bar close; no external alert API needed. A TradingView/Pine webhook
+  path (`tv-listener` / `tv-poller` / `tv-invalidation`) is supported as an optional parallel source.
+- **Entry radar (`entry-radar.js`)** — confirms the candle by setup family then places the resting
+  maker limit at the exact reclaim, instead of an hourly stale limit. `confirm.js` stays the only hard
+  gate (no auto-trade): un-armed signals are a feed the LLM reads, not orders.
+
+### Observability dashboard (read-only)
+- Local read-only dashboard (`dashboard/`) — overview, market, grid, routines, edges, full closed-trade
+  history with net-of-fees win/loss and **hold duration measured from fill** (with a guard so a stale
+  fill timestamp can never inflate the duration). Serves on `127.0.0.1`, no execution capability.
+
+### Exit & hold-time research (out-of-sample)
+- **Exit-policy simulator (`exit-policy.js`)** — isolates the exit: compares single-TP-held vs scale-out
+  under realistic asymmetric fees (maker entry+TP / taker stop), stop-first intra-bar (anti-mirage).
+- **Hold-time sweep** — `optimize.js` reports expectancy by max-hold cap, so the time-stop is chosen
+  from data per strategy rather than guessed.
+- **Fill-quality / adverse-selection audit (`fill-audit.js`)** — fill rate, planned-vs-actual slippage,
+  and the expectancy of *filled* trades, to diagnose the out-of-sample↔live gap on resting maker fills.
+- **Regime classifier & adaptive exit profile** (`regime-classifier.js`, `exit-profile.js`), **fee guard**
+  (`fee-guard.js`, skip when the stop is too tight for fees to clear), **cohort audit** (`cohort-audit.js`).
+
+### Notes
+- Time-stop is regime-aware: mean-reversion is capped, trend is let to run (re-validate the cap on your data).
+- Everything new is additive and flag-gated; defaults keep prior behaviour. Tests: full offline suite green.
+
 ## [0.2.0] — Perception layer + price-action panel
 
 Second public snapshot. Still paper-trading only (Bybit demo). Adds a deterministic

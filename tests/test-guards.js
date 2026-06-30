@@ -127,5 +127,17 @@ ok("DEMO: SL manquant bloque TOUJOURS (integrite)", demoNoSl.ok === false && dem
 const demoBadGeo = runGuards({ symbol: "BTC", side: "long", setup: "S1_MTF", entry: 100, stop_loss: 99.5, take_profits: [{ px: 104 }, { px: 108 }] }, demoCtx, { demo: true });
 ok("DEMO: geometrie SL trop serree bloque TOUJOURS", demoBadGeo.ok === false && demoBadGeo.blocks.some((b) => /sl-geometry/.test(b)));
 
+// ── RAIL DE SESSION (D051, porte du scalp) : perp TradFi decroche du cash hors-session ──
+{
+  const eq = { symbol: "SPY", side: "long", setup: "S1_MTF", entry: 100, stop_loss: 98, take_profits: [{ px: 102 }, { px: 104 }] };
+  const onlySess = { only: ["session"] };
+  ok("session us_equity FERME -> BLOCK", runGuards(eq, { session: { session: "us_equity", open: false, reason: "outside_RTH" } }, onlySess).blocks.some((b) => /session/.test(b)));
+  ok("session us_equity OUVERT -> pas de block", runGuards(eq, { session: { session: "us_equity", open: true, reason: "RTH" } }, onlySess).ok === true);
+  ok("session metals FERME -> WARN (pas BLOCK)", (() => { const m = runGuards({ ...eq, symbol: "XAUT" }, { session: { session: "metals", open: false, reason: "weekend" } }, onlySess); return m.ok === true && m.warnings.some((w) => /session/.test(w)); })());
+  ok("session 24x7 -> pass", runGuards({ ...eq, symbol: "BTC" }, { session: { session: "24x7", open: true, reason: "24x7" } }, onlySess).ok === true);
+  ok("session absente -> skip (retro-compat)", runGuards(eq, {}, onlySess).ok === true);
+  ok("session us_equity ferme reste DUR en DEMO", runGuards(eq, { session: { session: "us_equity", open: false, reason: "outside_RTH" } }, { only: ["session"], demo: true }).blocks.some((b) => /session/.test(b)));
+}
+
 console.log(`\n  ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

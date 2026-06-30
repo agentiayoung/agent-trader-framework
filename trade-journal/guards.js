@@ -19,7 +19,7 @@
 const { checkSlGeometry, validatedSlFloor } = require("./bracket-check.js");
 
 // Familles de setup : MR = mean-reversion (exemptees de R:R>=2 car geometrie ATR
-// validee OOS, approved 10.06) ; TREND = tendance/zone (R:R>=2 jusqu'a TP2 obligatoire).
+// validee OOS, GO Hugo 10.06) ; TREND = tendance/zone (R:R>=2 jusqu'a TP2 obligatoire).
 const MR_FAMILIES = new Set(["MR8", "MR4", "S5"]);
 const TREND_FAMILIES = new Set(["S1", "S2", "S3", "S12"]);
 
@@ -78,6 +78,24 @@ const GUARDS = [
       if (geo.ok === false) return block(geo.msg);
       if (geo.ok === null) return skip(geo.reason);
       return pass(`dist SL ${geo.dist_atr}xATR >= floor ${floor}xATR (famille ${setupFamily(order.setup) || "?"})`);
+    },
+  },
+  // 2bis) RAIL DE SESSION (D051 scalp, 23.06 — porte ici) : un perp d'actif TradFi DECROCHE du cash
+  //   hors-session (thin/gappy ; l'edge equities est mesure sur les barres RTH du cash). DUR pour
+  //   us_equity (NYSE/Nasdaq RTH) ; WARN pour metals (XAUT = token gold 24/7) ; PASS pour 24x7 (crypto).
+  //   N'empeche JAMAIS de gerer/sortir l'existant (preflight = NOUVELLES entrees). ctx.session assemble
+  //   par preflight (universe.sessionOpen). Reversible SESSION_GATE=0. Reste DUR en DEMO_ACTIVE.
+  {
+    name: "session",
+    check(order, ctx) {
+      if (process.env.SESSION_GATE === "0") return skip("rail de session desactive (SESSION_GATE=0).");
+      const s = ctx && ctx.session;
+      if (!s || !s.session) return skip("session non evaluee (ctx.session absent).");
+      if (s.session === "24x7") return pass("24x7 (crypto)");
+      if (s.open) return pass(`${s.session} ouvert (${s.reason})`);
+      if (s.session === "us_equity")
+        return block(`MARCHE SOUS-JACENT FERME (${s.session} ${s.reason}) -> le perp ${order.symbol || ""} decroche du cash hors-RTH (thin/gappy, edge mesure en RTH). Pas de NOUVELLE entree ; gerer/sortir l'existant reste autorise.`);
+      return warn(`Sous-jacent ferme (${s.session} ${s.reason}) -> ${order.symbol || ""} (token 24/7) peut gapper au reopen. Prudence/size-down ; pas un blocage dur.`);
     },
   },
   // 3) R:R>=2 jusqu'a TP2 — UNIQUEMENT setups de tendance (S1/S2/S3/S12). MR exemptes
@@ -146,7 +164,7 @@ const GUARDS = [
 // de noms de guards (pour tester / pour un repositionnement qui ne ré-ajoute pas de risque).
 // Guards BLOQUANTS (gates qui EMPECHENT de trader) vs INTEGRITE (sl-mandatory/sl-geometry = data
 // propre). En DEMO_ACTIVE, les bloquants sont degrades en warn -> le LLM les VOIT mais TRANCHE
-// (approved 16.06 : en demo on trade activement pour tester/optimiser l'infra ; SL + geometrie +
+// (GO Hugo 16.06 : en demo on trade activement pour tester/optimiser l'infra ; SL + geometrie +
 // sizing restent DURS, sinon la data est inexploitable = le but est justement de l'exploiter).
 const SOFT_GUARDS = new Set(["risk-reward", "breaker", "daily-limit", "exposure"]);
 

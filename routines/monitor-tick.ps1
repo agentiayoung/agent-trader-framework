@@ -4,9 +4,9 @@
 # -> ALERTE Telegram (alerte seule, AUCUN ordre place). Ferme l'angle mort 4h : une position
 # NUE est detectee en ~30 min au lieu d'attendre la prochaine routine.
 # Met a jour monitor-state.json -> le watchdog horaire (health-check.ps1) ne fausse plus.
-# AUTO-EXECUTION = OFF (approved requis). Usage : powershell -File routines\monitor-tick.ps1
+# AUTO-EXECUTION = OFF (GO Hugo requis). Usage : powershell -File routines\monitor-tick.ps1
 $ErrorActionPreference = "Continue"
-$proj = Split-Path -Parent $PSScriptRoot
+$proj = "C:\Users\admin\Desktop\DEV CLAUDE CODE\projets\agent-trader"
 Set-Location $proj
 $logdir = "$proj\routines\logs"; New-Item -ItemType Directory -Force -Path $logdir | Out-Null
 $log = "$logdir\monitor-tick.log"

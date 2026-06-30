@@ -147,7 +147,21 @@ ok("normalise symbole + active raw", orph2.length === 1 && orph2[0].symbol === "
 ok("aucun ordre -> aucun orphelin", findOrphanOrders([], [], []).length === 0);
 ok("tout en position -> aucun orphelin", findOrphanOrders([{ symbol: "BTC/USDT:USDT" }], ["BTC/USDT:USDT"], []).length === 0);
 
-// ── checkSlPlacement : SL anti-sweep (10.06, finding the maintainer — cas HYPE 55.50 vs low 55.455) ──
+// ── ORPHELIN reduce-only sans entree vivante (fix 27.06, parite scalp, bug DOGE/SOL/SUI) ──
+// SL/TP reduce-only sur un symbole flat dont l'ENTREE a disparu, MAIS un pending stale subsiste -> orphelin.
+const orphReduce = findOrphanOrders([
+  { symbol: "DOGE/USDT:USDT", reduceOnly: true, triggerPrice: 0.0746 },
+  { symbol: "DOGE/USDT:USDT", reduceOnly: true, triggerPrice: 0.0733 },
+], [], ["DOGE"]); // DOGE est "actif" au journal (pending stale) mais SANS ordre d'entree vivant
+ok("reduce-only sans entree vivante -> orphelin malgre le pending stale", orphReduce.some((o) => o.symbol === "DOGE" && o.count === 2));
+// entree vivante (non-reduce) presente -> bracket legitime, 0 orphelin
+const legit = findOrphanOrders([
+  { symbol: "DOGE/USDT:USDT", reduceOnly: false, price: 0.07389 },
+  { symbol: "DOGE/USDT:USDT", reduceOnly: true, triggerPrice: 0.0746 },
+], [], ["DOGE"]);
+ok("entree vivante -> bracket legitime, 0 orphelin", legit.length === 0);
+
+// ── checkSlPlacement : SL anti-sweep (10.06, finding Hugo — cas HYPE 55.50 vs low 55.455) ──
 const { checkSlPlacement } = require("../trade-journal/bracket-check.js");
 const lows30 = Array(28).fill(58).concat([55.455, 57.3]);   // swing low 55.455
 const highs30 = Array(28).fill(60).concat([62.5, 61]);      // swing high 62.5
@@ -182,7 +196,7 @@ ok("seuil personnalisable (min 2x -> 1.79 = ko)", checkSlGeometry({ entry: 44.05
 ok("atr manquant -> ok:null", checkSlGeometry({ entry: 10, stop_loss: 9, atr: 0 }).ok === null);
 ok("entry manquant -> ok:null", checkSlGeometry({ entry: undefined, stop_loss: 9, atr: 1 }).ok === null);
 
-// ── validatedSlFloor : floor de géométrie PAR FAMILLE (approved 10.06, option A) ──
+// ── validatedSlFloor : floor de géométrie PAR FAMILLE (GO Hugo 10.06, option A) ──
 // L'exemption R:R≥2 des MR est CONDITIONNELLE à la géométrie validée → le floor passé à
 // checkSlGeometry devient celui de la famille (×0.85 tolérance ATR live) au lieu de 1×ATR.
 const { validatedSlFloor } = require("../trade-journal/bracket-check.js");
@@ -195,6 +209,22 @@ ok("setup absent -> floor universel 1", validatedSlFloor(undefined) === 1);
 // cas HYPE complet avec famille : SL 0.85xATR vs floor MR8 2.12 -> ko (encore plus net qu'au floor 1)
 ok("HYPE MR8 0.85xATR < floor famille 2.12 = ko",
   checkSlGeometry({ entry: 56.75, stop_loss: 54.75, atr: 2.35, min_dist_atr: validatedSlFloor("MR8_MTF") }).ok === false);
+
+// ── DEFENSIF : args manquants ne crashent pas (bug 21.06 : verify-bracket appele sans payload
+//    -> 'Cannot read properties of undefined (reading symbol)'). verifyBracket/classifyStops
+//    doivent degrader proprement (jamais throw) sur intended/actual/stops/ctx absents. ──
+ok("verifyBracket(undefined, actual) ne throw pas", (() => {
+  try { const r = verifyBracket(undefined, { position: null, slOrders: [], tpOrders: [] }); return r && typeof r.ok === "boolean"; } catch (e) { return false; }
+})());
+ok("verifyBracket({}, undefined) ne throw pas", (() => {
+  try { const r = verifyBracket({}, undefined); return r && typeof r.ok === "boolean"; } catch (e) { return false; }
+})());
+ok("verifyBracket(undefined, undefined) ne throw pas", (() => {
+  try { const r = verifyBracket(undefined, undefined); return r && Array.isArray(r.issues); } catch (e) { return false; }
+})());
+ok("classifyStops(undefined, undefined) ne throw pas", (() => {
+  try { const r = classifyStops(undefined, undefined); return r && Array.isArray(r.slOrders) && Array.isArray(r.tpOrders); } catch (e) { return false; }
+})());
 
 console.log(`\n  bracket-check.js: ${passed} pass, ${failed} fail`);
 process.exit(failed ? 1 : 0);

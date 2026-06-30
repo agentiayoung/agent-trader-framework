@@ -3,7 +3,7 @@
 // Notifier Telegram pour l'agent trader — appelé par les routines sur
 // trade / cancel / circuit-breaker. No-op gracieux si non configuré.
 //
-// Config (config/.env) : TELEGRAM_BOT_TOKEN_ROUTINE (ou _HYPERLIQUID) + TELEGRAM_CHAT_ID
+// Config (config/.env) : TELEGRAM_BOT_TOKEN_ROUTINE (ou _HYPERLIQUID) + TELEGRAM_CHAT_ID_HUGO
 // Usage : node trade-journal/notify.js "message markdown"
 
 const https = require("https");
@@ -11,7 +11,7 @@ const path = require("path");
 require(path.join(__dirname, "..", "skills", "bybit", "index.js")); // déclenche le chargement .env
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN_ROUTINE || process.env.TELEGRAM_BOT_TOKEN_HYPERLIQUID || "";
-const CHAT = process.env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID || "";
+const CHAT = process.env.TELEGRAM_CHAT_ID_HUGO || process.env.TELEGRAM_CHAT_ID || "";
 
 // Une tentative d'envoi (timeout 8s -> jamais bloquant). Resout true/false.
 // markdown=false -> texte BRUT (pas de parse_mode) : un message technique (paths avec _,

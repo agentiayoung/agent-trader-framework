@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading desk — 2 agents (demo)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#11161d; --line:#21262d; --txt:#e6edf3; --muted:#8b949e;
+    --green:#3fb950; --red:#f85149; --accent:#58a6ff; --amber:#d29922; --violet:#a371f7;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.45}
+  .wrap{max-width:1280px;margin:0 auto;padding:20px 18px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+  h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.01em}
+  .sub{color:var(--muted);font-size:12px}
+  .demo{font-size:11px;color:var(--amber);border:1px solid var(--amber);border-radius:5px;padding:2px 7px;white-space:nowrap}
+  /* tabs */
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
+  .tab{background:none;border:none;color:var(--muted);font:inherit;font-size:13px;padding:9px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab:hover{color:var(--txt)}
+  .tab.active{color:var(--txt);border-bottom-color:var(--accent);font-weight:600}
+  .view{display:none} .view.active{display:block}
+  /* cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px}
+  .card .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .card .v{font-size:21px;font-family:var(--mono);margin-top:6px;font-weight:600}
+  .card .s{font-size:11px;color:var(--muted);margin-top:3px}
+  .pos{color:var(--green)} .neg{color:var(--red)} .warn{color:var(--amber)}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+  section h2{font-size:12px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .fresh{font-size:10px;font-weight:500;color:var(--muted);background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;text-transform:none;letter-spacing:0}
+  .fresh.stale{color:var(--red);border-color:var(--red)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;cursor:default}
+  th.sortable{cursor:pointer} th.sortable:hover{color:var(--txt)}
+  td.mono{font-family:var(--mono)}
+  .grid-tbl{overflow-x:auto}
+  .chart{display:flex;gap:18px;flex-wrap:wrap}
+  .chart .c{flex:1;min-width:300px}
+  .chart .lab{font-size:12px;color:var(--muted);margin-bottom:4px;display:flex;justify-content:space-between}
+  svg{display:block}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+  .dot.g{background:var(--green)} .dot.r{background:var(--red)} .dot.a{background:var(--amber)} .dot.m{background:var(--muted)}
+  .badge{font-size:11px;padding:1px 6px;border-radius:4px;background:var(--line)}
+  .pill{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--line)}
+  .pill.neg{color:var(--red);border-color:var(--red)} .pill.pos{color:var(--green);border-color:var(--green)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .tags span{display:inline-block;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin:2px 3px 2px 0}
+  .note{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4}
+  .hist-filters{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px}
+  .hist-filters select,.hist-filters input{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font:inherit;font-size:12px}
+  #histTable tbody tr{cursor:pointer}
+  #histTable tbody tr:hover{background:var(--panel2)}
+  #histTable th{cursor:pointer;user-select:none}
+  #histTable th.sorted::after{content:" \25BE";color:var(--accent)}
+  #histTable th.sorted.asc::after{content:" \25B4"}
+  .hist-detail td{background:var(--panel2);padding:10px 12px}
+  .hist-detail .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 16px;font-size:12px}
+  .hist-detail .kv b{color:var(--muted);font-weight:500}
+  .hist-detail .tl{margin-top:8px;font-size:11px;color:var(--muted);max-height:160px;overflow:auto}
+  .hist-dist{display:flex;align-items:flex-end;gap:6px;height:90px;padding:4px 0}
+  .hist-dist .b{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px}
+  .hist-dist .b i{width:100%;border-radius:3px 3px 0 0;min-height:2px}
+  .hist-dist .b small{font-size:10px;color:var(--muted)}
+  footer{color:var(--muted);font-size:11px;margin-top:8px;text-align:center}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>Trading desk — agent-trader (4h) + scalp-trader</h1>
+      <div class="sub" id="gen">chargement…</div></div>
+    <span class="demo">DEMO · lecture seule · 127.0.0.1</span>
+  </header>
+
+  <div class="tabs" id="tabs"></div>
+
+  <!-- OVERVIEW -->
+  <div class="view active" data-view="overview">
+    <div class="cards" id="ovCards"></div>
+    <section><h2>Santé des agents <span class="fresh" data-fresh="agent-heartbeat"></span></h2>
+      <div id="ovHealth"></div></section>
+    <section><h2>Positions &amp; ordres — Bybit live <span class="fresh" id="posFresh"></span></h2>
+      <table id="ovPositions"><thead><tr><th>Agent</th><th>Paire</th><th>Sens</th><th>Statut</th><th>Entrée</th><th>SL</th><th>Mark</th><th>uPnL</th></tr></thead><tbody></tbody></table></section>
+  </div>
+
+  <!-- AGENTS -->
+  <div class="view" data-view="agents">
+    <section><h2>Courbes equity</h2><div class="chart" id="agCharts"></div></section>
+    <section><h2>Par agent</h2>
+      <table id="agTable"><thead><tr><th>Agent</th><th>Equity</th><th>Jour</th><th>DD</th><th>Breaker</th><th>Actives</th><th>Clos</th><th>WR</th><th>R moy</th><th>PnL clos</th></tr></thead><tbody></tbody></table></section>
+  </div>
+
+  <!-- MARCHÉ -->
+  <div class="view" data-view="market">
+    <div class="cards" id="mkCards"></div>
+    <section><h2>Posture &amp; dispersion <span class="fresh" data-fresh="scan-latest"></span></h2><div id="mkPosture"></div></section>
+    <section><h2>Bottom-watch</h2><div id="mkBottom"></div></section>
+  </div>
+
+  <!-- GEX -->
+  <div class="view" data-view="gex">
+    <div class="grid2" id="gexGrid"></div>
+    <section><h2 class="muted">Lecture</h2><div class="note" id="gexRead"></div></section>
+  </div>
+
+  <!-- GRILLE -->
+  <div class="view" data-view="grid">
+    <section><h2>Grille multi-actifs <span class="fresh" data-fresh="scan-latest"></span></h2>
+      <div class="grid-tbl"><table id="grTable"><thead></thead><tbody></tbody></table></div>
+      <div class="note">OBV = signal de volume (pas de volume brut exposé par le scan). Clique un en-tête pour trier.</div></section>
+  </div>
+
+  <!-- EDGES -->
+  <div class="view" data-view="edges">
+    <div class="grid2" id="edAgents"></div>
+  </div>
+
+  <!-- HISTORIQUE -->
+  <div class="view" data-view="history">
+    <section><h2>Historique des trades clos <span class="fresh" id="histFresh"></span></h2>
+      <div id="histReconcile"></div>
+      <div class="cards" id="histTotals"></div>
+      <div class="grid2" style="margin-top:12px">
+        <div class="card" style="grid-column:span 2"><div class="k">PnL net cumulé</div><div id="histCurve"></div></div>
+      </div>
+      <div id="histDist" style="margin-top:12px"></div>
+    </section>
+    <section><h2>Trades <span class="badge" id="histCount"></span></h2>
+      <div class="hist-filters" id="histFilters">
+        <select data-f="agent"><option value="">Tous agents</option><option value="agent">agent-trader</option><option value="scalp">scalp-trader</option></select>
+        <select data-f="side"><option value="">Tous sens</option><option value="long">long</option><option value="short">short</option></select>
+        <select data-f="outcome"><option value="">Toutes issues</option><option value="win">win</option><option value="loss">loss</option></select>
+        <select data-f="strategy"><option value="">Toutes stratégies</option></select>
+        <input data-f="symbol" type="text" placeholder="Paire (ex. BTC)" autocomplete="off">
+      </div>
+      <div class="grid-tbl"><table id="histTable"><thead></thead><tbody></tbody></table></div>
+      <div class="note">Clique un en-tête pour trier · clique une ligne pour le détail du trade. <code>thesis</code> non persisté ; <code>R</code>/<code>timeline</code>/<code>review</code> affichés quand disponibles.</div>
+    </section>
+  </div>
+
+  <footer>Poll adaptatif (15 s portfolio/santé · 60 s marché/GEX/grille/edges) · sources = fichiers locaux des 2 agents (déterministe). Aucune exécution d'ordre.</footer>
+</div>
+
+<script>
+// ─────────────── helpers ───────────────
+const fmt = (n,d=0)=> n==null||Number.isNaN(n) ? "—" : Number(n).toLocaleString("fr-FR",{minimumFractionDigits:d,maximumFractionDigits:d});
+const sgn = (n,d=2)=> n==null||Number.isNaN(n) ? "—" : (n>0?"+":"")+fmt(n,d);
+const cls = (n)=> n==null?"":(n>0?"pos":(n<0?"neg":""));
+const pct = (n,d=0)=> n==null?"—":fmt(n,d)+" %";
+function fmtAge(s){ if(s==null) return "n/a"; if(s<90) return s+" s"; if(s<5400) return Math.round(s/60)+" min"; return (s/3600).toFixed(1)+" h"; }
+const state = { health:null };
+
+function setFresh(){
+  const h = state.health||{};
+  document.querySelectorAll("[data-fresh]").forEach(el=>{
+    const k = el.getAttribute("data-fresh"); const f = h[k];
+    if(!f){ el.textContent=""; return; }
+    el.textContent = f.exists ? ("maj il y a "+fmtAge(f.age_sec)) : "source absente";
+    el.classList.toggle("stale", !!f.stale);
+  });
+}
+
+function spark(series){
+  if(!series || series.length<2) return '<svg viewBox="0 0 300 120" style="width:100%;height:120px"></svg>';
+  const ys = series.map(p=>p.equity);
+  const min=Math.min(...ys), max=Math.max(...ys), pad=(max-min)*0.08||1, lo=min-pad, hi=max+pad, W=300, H=120;
+  const pts = series.map((p,i)=> ((i/(series.length-1))*W).toFixed(1)+","+(H-((p.equity-lo)/(hi-lo))*H).toFixed(1)).join(" ");
+  const up = ys[ys.length-1]>=ys[0];
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:120px">
+    <polyline points="${pts}" fill="none" stroke="${up?'var(--green)':'var(--red)'}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+// barre de niveaux GEX : put_wall .. call_wall avec spot/flip/max_pain
+function gexBar(o){
+  const lv=[o.put_wall,o.gex_flip,o.max_pain,o.call_wall,o.spot].filter(v=>v!=null);
+  if(lv.length<2) return "";
+  const min=Math.min(...lv), max=Math.max(...lv), W=520, H=58, pad=(max-min)*0.04||1, lo=min-pad, hi=max+pad;
+  const X=v=> ((v-lo)/(hi-lo))*W;
+  const mk=(v,col,lab,yo)=> v==null?"":`<line x1="${X(v).toFixed(1)}" x2="${X(v).toFixed(1)}" y1="14" y2="40" stroke="${col}" stroke-width="2"/>
+    <text x="${X(v).toFixed(1)}" y="${yo}" fill="${col}" font-size="9" text-anchor="middle" font-family="var(--mono)">${lab}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px">
+    <line x1="0" x2="${W}" y1="27" y2="27" stroke="var(--line)" stroke-width="1"/>
+    ${mk(o.put_wall,"var(--green)","put "+fmt(o.put_wall),52)}
+    ${mk(o.call_wall,"var(--red)","call "+fmt(o.call_wall),52)}
+    ${mk(o.max_pain,"var(--amber)","pain "+fmt(o.max_pain),10)}
+    ${mk(o.gex_flip,"var(--violet)","flip "+fmt(o.gex_flip),10)}
+    ${mk(o.spot,"var(--accent)","spot "+fmt(o.spot),52)}
+  </svg>`;
+}
+
+// ─────────────── renderers ───────────────
+function renderOverview(){
+  const d=state.portfolio, r=state.routines; if(!d) return;
+  const ag=d.aggregate||{};
+  document.getElementById("ovCards").innerHTML=[
+    ["Equity totale", fmt(ag.total_equity)+" USDT",""," "],
+    ["PnL clos", sgn(ag.total_closed_pnl)+" USDT", cls(ag.total_closed_pnl),""],
+    ["Win rate", pct(ag.combined_win_rate),"",""],
+    ["R moyen", (ag.combined_avg_r??"—"), cls(ag.combined_avg_r),""],
+    ["Trades clos", ag.total_closed??"—","",""],
+    ["Positions", ag.total_active??"—","",""],
+  ].map(([k,v,c])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  // santé : reuse routines + portfolio agents
+  const rows=(d.agents||[]).map(a=>{
+    const rt=(r&&r[a.name==="agent-trader"?"agent":"scalp"])||{};
+    const haltDot = a.halt?'<span class="dot r"></span>HALT':'<span class="dot g"></span>OK';
+    const reason = rt.last_incomplete_reason ? ` title="${String(rt.last_incomplete_reason).replace(/"/g,"'")}"` : "";
+    const comp = rt.last_complete===false?`<span class="dot a"></span><span${reason}>incomplet</span>`:(rt.last_complete?'<span class="dot g"></span>complet':'<span class="dot m"></span>n/a');
+    // liveness ÉLARGIE : le point reflète `live` (heartbeat OU scan OU dernier trade récent),
+    // l'âge affiché = activité la plus récente -> l'agent 4h n'apparaît pas faux-mort entre 2 heartbeats.
+    const liveDot = rt.live===false?'<span class="dot r"></span>':(rt.live?'<span class="dot g"></span>':'<span class="dot m"></span>');
+    const actAge = rt.last_activity_sec!=null?fmtAge(rt.last_activity_sec):(rt.age_sec!=null?fmtAge(rt.age_sec):"—");
+    return `<tr><td>${a.name}</td>
+      <td class="mono">${fmt(a.equity)}</td>
+      <td class="mono ${cls(a.day_pnl_pct)}">${sgn(a.day_pnl_pct)} %</td>
+      <td class="mono">${a.dd_pct!=null?fmt(a.dd_pct,1)+" %":"—"}</td>
+      <td>${haltDot}</td><td>${comp}</td>
+      <td>${liveDot}${actAge}</td></tr>`;
+  }).join("");
+  document.getElementById("ovHealth").innerHTML=`<table><thead><tr><th>Agent</th><th>Equity</th><th>Jour</th><th>DD</th><th>Breaker</th><th>Dernière routine</th><th>Activité</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+  // positions = VÉRITÉ BYBIT (snapshot bybit-live.json), PAS le journal -> 0 fantôme.
+  // Fallback journal si le snapshot d'un agent est indisponible.
+  const P=state.positions||{}; const pr=[];
+  const slFor=(brk,sym)=>{ const b=(brk||[]).find(o=>o.symbol===sym&&o.trigger!=null); return b?b.trigger:null; };
+  for(const name of ["agent-trader","scalp-trader"]){
+    const a=P[name];
+    if(a&&a.available){
+      for(const p of (a.positions||[])){
+        const sl=slFor(a.brackets,p.symbol);
+        pr.push(`<tr><td>${name}</td><td><b>${p.symbol}</b></td><td>${p.side||'—'}</td>
+          <td><span class="dot g"></span>open</td>
+          <td class="mono">${p.entry??'—'}</td><td class="mono">${sl??'—'}</td>
+          <td class="mono">${p.mark??'—'}</td>
+          <td class="mono ${p.upnl!=null?cls(p.upnl):''}">${p.upnl!=null?sgn(p.upnl):'—'}</td></tr>`);
+      }
+      for(const o of (a.pending||[])){
+        const sl=slFor(a.brackets,o.symbol);
+        pr.push(`<tr><td>${name}</td><td><b>${o.symbol}</b></td><td>${o.side==='buy'?'long':(o.side==='sell'?'short':o.side||'—')}</td>
+          <td><span class="dot a"></span>pending</td>
+          <td class="mono">${o.px??'—'}</td><td class="mono">${sl??'—'}</td>
+          <td class="mono muted">au repos</td><td class="mono">—</td></tr>`);
+      }
+    } else {
+      // fallback journal pour cet agent (snapshot absent)
+      const ag=(d.agents||[]).find(x=>x.name===name);
+      for(const t of (ag&&ag.active||[])){
+        const tl=Array.isArray(t.timeline)?t.timeline:[], last=tl.length?tl[tl.length-1]:null;
+        pr.push(`<tr><td>${name} <span class="badge" title="snapshot Bybit indisponible -> journal">journal</span></td><td><b>${t.symbol}</b></td><td>${t.side||'—'}</td>
+          <td>${t.status==='open'?'<span class="dot g"></span>open':'<span class="dot m"></span>pending?'}</td>
+          <td class="mono">${t.entry_actual??t.entry_planned??'—'}</td><td class="mono">${t.stop_loss??'—'}</td>
+          <td class="mono">${last&&last.mark!=null?last.mark:'—'}</td>
+          <td class="mono ${last&&last.upnl!=null?cls(last.upnl):''}">${last&&last.upnl!=null?sgn(last.upnl):'—'}</td></tr>`);
+      }
+    }
+  }
+  document.querySelector("#ovPositions tbody").innerHTML=pr.length?pr.join(""):`<tr><td colspan="8" style="text-align:center" class="muted">Aucune position/ordre sur Bybit.</td></tr>`;
+  // badge fraicheur du snapshot Bybit
+  const ages=["agent-trader","scalp-trader"].map(n=>P[n]&&P[n].available?P[n].age_sec:null).filter(v=>v!=null);
+  const fe=document.getElementById("posFresh");
+  if(fe){ if(ages.length){const mn=Math.min(...ages); fe.textContent="snapshot Bybit il y a "+fmtAge(mn); fe.classList.toggle("stale",mn>1800);} else {fe.textContent="snapshot indisponible (journal fallback)"; fe.classList.add("stale");} }
+}
+
+function renderAgents(){
+  const d=state.portfolio; if(!d) return;
+  document.getElementById("agCharts").innerHTML=(d.agents||[]).map(a=>{
+    const s=(d.series||{})[a.name]||[], first=s.length?s[0].equity:null, last=s.length?s[s.length-1].equity:a.equity;
+    const delta=(first!=null&&last!=null)?((last-first)/first*100):null;
+    return `<div class="c"><div class="lab"><span>${a.name}</span><span class="${cls(delta)}">${sgn(delta)} %</span></div>${spark(s)}</div>`;
+  }).join("");
+  document.querySelector("#agTable tbody").innerHTML=(d.agents||[]).map(a=>`<tr>
+    <td>${a.name}</td><td class="mono">${fmt(a.equity)}</td>
+    <td class="mono ${cls(a.day_pnl_pct)}">${sgn(a.day_pnl_pct)} %</td>
+    <td class="mono">${a.dd_pct!=null?fmt(a.dd_pct,1)+" %":"—"}</td>
+    <td>${a.halt?'<span class="dot r"></span>HALT':'<span class="dot g"></span>OK'}</td>
+    <td class="mono">${a.active_n} <span class="badge">${a.open_n}o/${a.pending_n}p</span></td>
+    <td class="mono">${a.closed_n}</td><td class="mono">${a.win_rate!=null?a.win_rate+' %':'—'}</td>
+    <td class="mono ${cls(a.avg_r)}">${a.avg_r??'—'}</td>
+    <td class="mono ${cls(a.closed_pnl)}">${sgn(a.closed_pnl)}</td></tr>`).join("");
+}
+
+function renderMarket(){
+  const m=state.market; const el=document.getElementById("mkCards");
+  if(!m||m.stale){ el.innerHTML=`<div class="card"><div class="k">Marché</div><div class="v warn">stale</div></div>`; return; }
+  const fg=m.fear_greed||{}, fgCol=fg.value==null?"":(fg.value<25?"neg":(fg.value>55?"warn":""));
+  el.innerHTML=[
+    ["Régime BTC", (m.regime||"—").split(" ")[0], ""],
+    ["ADX daily", fmt(m.btc_daily_adx,1), ""],
+    ["Posture", (m.posture&&m.posture.stance)||"—", (m.posture&&m.posture.stance==="defensive")?"warn":""],
+    ["Fear &amp; Greed", (fg.value??"—")+(fg.label?(" · "+fg.label):""), fgCol],
+  ].map(([k,v,c])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}" style="font-size:15px">${v}</div></div>`).join("");
+
+  const dp=m.dispersion||{}, p=m.posture||{};
+  document.getElementById("mkPosture").innerHTML=`
+    <div class="grid2">
+      <div><div class="k muted" style="font-size:11px;text-transform:uppercase">Posture</div>
+        <div style="margin:5px 0"><span class="pill ${p.stance==='defensive'?'neg':''}">${p.stance||'—'}</span></div>
+        <div class="tags">${(p.reasons||[]).map(x=>`<span>${x}</span>`).join("")||'<span class="muted">—</span>'}</div>
+        <div class="note">${p.note||""}</div></div>
+      <div><div class="k muted" style="font-size:11px;text-transform:uppercase">Dispersion / corrélation</div>
+        <table style="margin-top:5px"><tbody>
+          <tr><td>corr. moyenne</td><td class="mono">${fmt(dp.mean_corr,2)}</td></tr>
+          <tr><td>découplées</td><td class="mono">${dp.n_decoupled??'—'} / ${dp.n_pairs??'—'}</td></tr>
+          <tr><td>régime</td><td class="mono">${dp.regime||'—'}</td></tr>
+          <tr><td>hedge L+S</td><td>${dp.hedge_enabled?'<span class="dot g"></span>activable':'<span class="dot m"></span>non'}</td></tr>
+        </tbody></table></div>
+    </div>`;
+
+  const bw=m.bottom_watch||{};
+  const lst=(a)=> (a&&a.length)?`<div class="tags">${a.map(x=>`<span>${x}</span>`).join("")}</div>`:'<span class="muted">—</span>';
+  document.getElementById("mkBottom").innerHTML=`
+    <div class="grid2">
+      <table><tbody>
+        <tr><td>Paires au plus bas de cycle</td><td class="mono">${bw.pairs_at_cycle_low??'—'}</td></tr>
+        <tr><td>reclaim EMA50d / EMA200d</td><td class="mono">${bw.reclaim_ema50d??'—'} / ${bw.reclaim_ema200d??'—'}</td></tr>
+        <tr><td>BTC range pos</td><td class="mono">${bw.btc_range_pos!=null?bw.btc_range_pos+' %':'—'}</td></tr>
+        <tr><td>fear extreme / capitulation</td><td>${bw.fear_extreme?'<span class="dot r"></span>':'<span class="dot m"></span>'}${bw.alt_capitulation?'<span class="dot r"></span>capit.':'<span class="dot m"></span>'}</td></tr>
+        <tr><td>bottom confirmé</td><td>${bw.bottom_confirmed?'<span class="dot g"></span>oui':'<span class="dot m"></span>non'}</td></tr>
+      </tbody></table>
+      <div><div class="k muted" style="font-size:11px;text-transform:uppercase">Au plus bas</div>${lst(bw.at_cycle_low_pairs)}
+        <div class="k muted" style="font-size:11px;text-transform:uppercase;margin-top:8px">Div. haussière au bas</div>${lst(bw.bull_div_at_low)}
+        <div class="k muted" style="font-size:11px;text-transform:uppercase;margin-top:8px">Découplées du BTC</div>${lst(bw.decoupled_from_btc)}</div>
+    </div>`;
+}
+
+function gexCard(name,o){
+  if(!o) return `<section><h2>${name}</h2><div class="muted">indisponible</div></section>`;
+  const gneg=o.gamma_regime==="negative";
+  return `<section><h2>${name} <span class="pill ${gneg?'neg':'pos'}">gamma ${o.gamma_regime||'—'}</span></h2>
+    ${gexBar(o)}
+    <table style="margin-top:8px"><tbody>
+      <tr><td>spot</td><td class="mono">${fmt(o.spot)}</td><td>gex flip</td><td class="mono">${fmt(o.gex_flip)} ${o.above_flip==null?'':(o.above_flip?'<span class="pos">↑</span>':'<span class="neg">↓</span>')}</td></tr>
+      <tr><td>net GEX</td><td class="mono ${cls(o.net_gex)}">${sgn(o.net_gex)}</td><td>max pain</td><td class="mono">${fmt(o.max_pain)}</td></tr>
+      <tr><td>put / call wall</td><td class="mono">${fmt(o.put_wall)} / ${fmt(o.call_wall)}</td><td>put/call</td><td class="mono">${fmt(o.put_call,2)}</td></tr>
+      <tr><td>skew 25d</td><td class="mono">${fmt(o.skew_25d,1)}</td><td>ATM IV</td><td class="mono">${fmt(o.atm_iv,1)} %</td></tr>
+    </tbody></table></section>`;
+}
+function renderGex(){
+  const o=state.options;
+  if(!o||o.stale){ document.getElementById("gexGrid").innerHTML=`<section><h2 class="muted">Options</h2><div class="muted">stale / indisponible (Deribit)</div></section>`; document.getElementById("gexRead").textContent=""; return; }
+  document.getElementById("gexGrid").innerHTML=gexCard("BTC",o.btc)+gexCard("ETH",o.eth);
+  document.getElementById("gexRead").innerHTML=[o.btc&&o.btc.read?("<b>BTC</b> — "+o.btc.read):"",o.eth&&o.eth.read?("<b>ETH</b> — "+o.eth.read):""].filter(Boolean).join("<br>");
+}
+
+// grille : colonnes + tri
+const GCOLS=[
+  ["pair","Paire",0],["asset_class","Classe",0],["px","Px",1],["chg24","%24h",1],
+  ["dRsi","RSI d",1],["hRsi","RSI h",1],["stoch","Stoch",1],["macd","MACD",0],
+  ["dAdx","ADX",1],["trend","Trend",0],["regime_d","Rég.",0],["cyc","Cycle%",1],["obv","OBV",0],
+];
+let gSort={key:"pair",dir:1};
+function rsiCol(v){ if(v==null)return""; if(v<30)return"pos"; if(v>70)return"neg"; return""; }
+function dirCol(v){ return v==="bull"||v==="up"||v==="rising"?"pos":(v==="bear"||v==="down"||v==="falling"?"neg":"muted"); }
+function renderGrid(){
+  const g=state.grid; const th=document.querySelector("#grTable thead"), tb=document.querySelector("#grTable tbody");
+  if(!g||g.stale){ th.innerHTML=""; tb.innerHTML=`<tr><td class="muted">grille stale.</td></tr>`; return; }
+  th.innerHTML=`<tr>${GCOLS.map(c=>`<th class="sortable" data-k="${c[0]}">${c[1]}</th>`).join("")}</tr>`;
+  th.querySelectorAll("th").forEach(h=>h.onclick=()=>{const k=h.getAttribute("data-k"); gSort.dir=(gSort.key===k)?-gSort.dir:1; gSort.key=k; renderGrid();});
+  const rows=g.rows.map(r=>Object.assign({cyc:r.cycle?r.cycle.range_pos:null},r));
+  const k=gSort.key, d=gSort.dir;
+  rows.sort((a,b)=>{const x=a[k],y=b[k]; if(x==null)return 1; if(y==null)return -1; return (typeof x==="number"&&typeof y==="number")?(x-y)*d:String(x).localeCompare(String(y))*d;});
+  tb.innerHTML=rows.map(r=>`<tr>
+    <td><b>${r.pair||'—'}</b></td><td class="muted">${r.asset_class||'—'}</td>
+    <td class="mono">${fmt(r.px, r.px!=null&&r.px<10?4:(r.px<1000?2:0))}</td>
+    <td class="mono ${cls(r.chg24)}">${sgn(r.chg24,1)}</td>
+    <td class="mono ${rsiCol(r.dRsi)}">${fmt(r.dRsi,0)}</td>
+    <td class="mono ${rsiCol(r.hRsi)}">${fmt(r.hRsi,0)}</td>
+    <td class="mono">${fmt(r.stoch,0)}</td>
+    <td class="${dirCol(r.macd)}">${r.macd||'—'}</td>
+    <td class="mono">${fmt(r.dAdx,0)}</td>
+    <td class="${dirCol(r.trend)}">${r.trend||'—'}</td>
+    <td class="muted">${r.regime_d||'—'}</td>
+    <td class="mono">${r.cyc!=null?r.cyc+'%':'—'}</td>
+    <td class="${dirCol(r.obv)}">${r.obv||'—'}</td></tr>`).join("");
+}
+
+function edgeCard(name,e){
+  if(!e) return "";
+  const bs=e.by_side||{}, strat=(e.by_strategy||[]).slice(0,8), rec=e.reconcile;
+  const sideRow=(lbl,s)=> s?`<tr><td>${lbl}</td><td class="mono">${s.n}</td><td class="mono">${fmt(s.wr,0)} %</td><td class="mono ${cls(s.expectancy)}">${s.expectancy!=null?sgn(s.expectancy,3):'—'}</td><td class="mono ${cls(s.sum_net)}">${sgn(s.sum_net,0)}</td></tr>`:'';
+  const recLine=(rec&&rec.n)?`<div class="k muted" style="font-size:11px;margin-top:8px">Réconciliation (hors-stratégie) : <span class="mono">${rec.n}</span> fills · net <span class="mono ${cls(rec.sum_net)}">${sgn(rec.sum_net,0)}</span> — fills Bybit non rattachés à un trade armé, exclus des stats d'edge</div>`:'';
+  return `<section><h2>${name} <span class="pill ${cls(e.expectancy)}">${e.n} clos · exp ${e.expectancy!=null?sgn(e.expectancy,3):'—'}R</span></h2>
+    <div class="k muted" style="font-size:11px;text-transform:uppercase">Par côté</div>
+    <table style="margin:5px 0 12px"><thead><tr><th>Côté</th><th>n</th><th>WR</th><th>Exp R</th><th>Net</th></tr></thead><tbody>
+      ${sideRow("long",bs.long)}${sideRow("short",bs.short)}</tbody></table>
+    <div class="k muted" style="font-size:11px;text-transform:uppercase">Par stratégie (top 8)</div>
+    <table style="margin-top:5px"><thead><tr><th>Stratégie</th><th>n</th><th>WR</th><th>R moy</th><th>Net</th></tr></thead><tbody>
+      ${strat.map(s=>`<tr><td>${s.strategy}</td><td class="mono">${s.n}</td><td class="mono">${fmt(s.wr,0)} %</td><td class="mono ${cls(s.avg_r)}">${s.avg_r!=null?sgn(s.avg_r,3):'—'}</td><td class="mono ${cls(s.sum_net)}">${sgn(s.sum_net,0)}</td></tr>`).join("")||'<tr><td class="muted" colspan="5">—</td></tr>'}
+    </tbody></table>${recLine}</section>`;
+}
+function renderEdges(){
+  const e=state.edges; if(!e){return;}
+  document.getElementById("edAgents").innerHTML=edgeCard("agent-trader (4h)",e.agent)+edgeCard("scalp-trader",e.scalp);
+}
+
+// ─────────────── historique ───────────────
+const histState={ filter:{agent:"",side:"",outcome:"",strategy:"",symbol:""}, sort:{key:"ts_close",asc:false}, open:{}, wired:false };
+const HCOLS=[
+  {k:"ts_close",l:"Date",f:r=>fmtDate(r.ts_close)},
+  {k:"agent",l:"Agent"},
+  {k:"symbol",l:"Paire",f:r=>`<b>${r.symbol}</b>`},
+  {k:"side",l:"Sens",f:r=>r.side?`<span class="${r.side==='long'?'pos':'neg'}">${r.side}</span>`:'—'},
+  {k:"strategy",l:"Stratégie"},
+  {k:"r_multiple",l:"R",num:true,f:r=>`<span class="${cls(r.r_multiple)}">${r.r_multiple!=null?sgn(r.r_multiple,2):'—'}</span>`},
+  {k:"net_pnl",l:"PnL net",num:true,f:r=>`<span class="${cls(r.net_pnl)}">${sgn(r.net_pnl,2)}</span>`},
+  {k:"duration_min",l:"Durée",num:true,f:r=>fmtDurFlag(r.duration_min,r.agent)},
+  {k:"exit_reason",l:"Sortie",f:r=>r.exit_reason||'—'},
+  {k:"outcome",l:"Issue",f:r=>r.outcome?`<span class="${r.outcome==='win'?'pos':'neg'}">${r.outcome}</span>`:'—'},
+];
+function fmtDate(iso){ if(!iso) return "—"; const d=new Date(iso); if(isNaN(d)) return "—"; const p=x=>String(x).padStart(2,"0"); return `${p(d.getDate())}.${p(d.getMonth()+1)} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+// Durée composite, unité claire et scannable : "16j 0h" / "3h 20min" / "45 min".
+function fmtDur(m){
+  if(m==null) return "—";
+  m=Math.round(m);
+  if(m<60) return m+" min";
+  if(m<1440){ const h=Math.floor(m/60), mn=m%60; return mn? `${h}h ${mn}min` : `${h}h`; }
+  const d=Math.floor(m/1440), h=Math.round((m%1440)/60); return h? `${d}j ${h}h` : `${d}j`;
+}
+// Horizon ATTENDU par archétype : 4h agent ~10j (MAX_HOLD 60×4h) ; scalp ~2j (devrait durer des heures).
+// Au-delà = hold anormalement long -> flag ambre (signal, pas une erreur d'affichage).
+const HORIZON_MIN={ agent: 60*4*60, scalp: 2*1440 };
+function fmtDurFlag(m,agent){
+  const txt=fmtDur(m); const lim=HORIZON_MIN[agent];
+  if(lim && m!=null && m>lim){ const exp=agent==="scalp"?"~2j":"~10j"; return `<span style="color:var(--amber,#e0a800)" title="hold au-delà de l'horizon attendu (${exp}) — anormalement long">${txt} ⚠</span>`; }
+  return txt;
+}
+function histLine(pts,color){ // sparkline PnL cumulé
+  if(!pts||pts.length<2) return '<div class="muted" style="font-size:11px">pas assez de données</div>';
+  const W=900,H=120,P=4, ys=pts.map(p=>p.cum), mn=Math.min(...ys,0), mx=Math.max(...ys,0), rng=(mx-mn)||1;
+  const x=i=>P+i*(W-2*P)/(pts.length-1), y=v=>H-P-((v-mn)/rng)*(H-2*P);
+  const d=pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(p.cum).toFixed(1)}`).join(" ");
+  const zero=y(0);
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:120px">
+    <line x1="0" y1="${zero.toFixed(1)}" x2="${W}" y2="${zero.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+function totalCard(name,t){
+  if(!t) return "";
+  return `<div class="card"><div class="k">${name}</div>
+    <div class="v ${cls(t.sum_net)}">${sgn(t.sum_net,0)} <span class="muted" style="font-size:12px">USDT</span></div>
+    <div class="muted" style="font-size:12px;margin-top:4px">${t.n} clos · WR ${fmt(t.wr,0)}% · exp <span class="${cls(t.expectancy)}">${t.expectancy!=null?sgn(t.expectancy,2):'—'}</span>R</div></div>`;
+}
+function renderReconcileBanner(){
+  const el=document.getElementById("histReconcile"); if(!el) return;
+  const rc=state.reconcile;
+  if(!rc){ el.innerHTML=""; return; }
+  const lbl={"agent-trader":"agent-trader (4h)","scalp-trader":"scalp-trader"};
+  const parts=Object.keys(lbl).map(k=>{
+    const r=rc[k];
+    if(!r||!r.available) return `<span class="rc-item muted">${lbl[k]} : recoupement Bybit indisponible</span>`;
+    const ok=r.match;
+    const age=r.age_sec!=null?fmtAge(r.age_sec):"—";
+    return `<span class="rc-item">${ok?'✅':'⚠️'} <b>${lbl[k]}</b> · Bybit 7j <b class="${cls(r.bybit_realized_7d)}">${sgn(r.bybit_realized_7d,2)}</b> · journal 7j <span class="${cls(r.journal_realized_7d)}">${sgn(r.journal_realized_7d,2)}</span> · Δ <span class="${ok?'pos':'neg'}">${sgn(r.delta_7d,2)}</span> <small class="muted">(${age})</small></span>`;
+  });
+  el.innerHTML=`<div class="note rc-banner" style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:8px"><span class="muted" style="text-transform:uppercase;font-size:11px">Vérité Bybit</span>${parts.join("")}</div>
+    <div class="note muted" style="font-size:11px;margin:-4px 0 8px">Δ = journal − Bybit (fenêtre 7j). Un écart vient des trades &gt;7j que Bybit demo oublie mais que le journal conserve. Win/loss & PnL = NET (après frais).</div>`;
+}
+function renderHistory(){
+  const d=state.history; if(!d||d.stale||!d.analytics){ document.getElementById("histTable").querySelector("tbody").innerHTML='<tr><td class="muted">historique indisponible</td></tr>'; return; }
+  const a=d.analytics;
+  // recoupement Bybit (vérité absolue) : Bybit realized 7j vs journal realized 7j
+  renderReconcileBanner();
+  // totaux + courbe + distribution
+  document.getElementById("histTotals").innerHTML=totalCard("Combiné",a.totals.combined)+totalCard("agent-trader (4h)",a.totals.agent)+totalCard("scalp-trader",a.totals.scalp);
+  document.getElementById("histCurve").innerHTML=histLine(a.equity_curve.combined, a.totals.combined.sum_net>=0?"var(--green)":"var(--red)");
+  const dmax=Math.max(...a.r_distribution.map(b=>b.n),1);
+  document.getElementById("histDist").innerHTML=`<div class="k muted" style="font-size:11px;text-transform:uppercase">Distribution des R-multiples</div>
+    <div class="hist-dist">${a.r_distribution.map(b=>{const neg=b.key.startsWith("<")||b.key.startsWith("-");return `<div class="b"><small>${b.n}</small><i style="height:${(b.n/dmax*70).toFixed(0)}px;background:${neg?'var(--red)':'var(--green)'}"></i><small>${b.key}</small></div>`;}).join("")}</div>`;
+  // fraîcheur
+  const last=d.trades.length?d.trades[0].ts_close:null;
+  const fe=document.getElementById("histFresh"); if(fe&&last){ const age=Math.floor((Date.now()-Date.parse(last))/1000); fe.textContent="dernier trade il y a "+fmtAge(age); fe.classList.toggle("stale",age>86400); }
+  // filtres : peupler les stratégies une fois + brancher les events
+  const fbox=document.getElementById("histFilters");
+  if(!histState.wired){
+    const ssel=fbox.querySelector('[data-f="strategy"]');
+    [...new Set(d.trades.map(t=>t.strategy))].sort().forEach(s=>{const o=document.createElement("option");o.value=s;o.textContent=s;ssel.appendChild(o);});
+    fbox.querySelectorAll("[data-f]").forEach(el=>{const ev=el.tagName==="INPUT"?"input":"change";el.addEventListener(ev,()=>{histState.filter[el.getAttribute("data-f")]=el.value.trim();drawHistTable();});});
+    histState.wired=true;
+  }
+  drawHistTable();
+}
+function drawHistTable(){
+  const d=state.history; if(!d) return;
+  const f=histState.filter;
+  let rows=d.trades.filter(r=>
+    (!f.agent||r.agent===f.agent)&&(!f.side||r.side===f.side)&&(!f.outcome||r.outcome===f.outcome)&&
+    (!f.strategy||r.strategy===f.strategy)&&(!f.symbol||(r.symbol||"").toUpperCase().includes(f.symbol.toUpperCase())));
+  const {key,asc}=histState.sort, col=HCOLS.find(c=>c.k===key);
+  rows=rows.slice().sort((x,y)=>{
+    let xv=x[key],yv=y[key];
+    if(col&&col.num){ xv=xv==null?-Infinity:xv; yv=yv==null?-Infinity:yv; return asc?xv-yv:yv-xv; }
+    xv=(xv==null?"":String(xv)); yv=(yv==null?"":String(yv)); return asc?xv.localeCompare(yv):yv.localeCompare(xv);
+  });
+  document.getElementById("histCount").textContent=rows.length+" / "+d.trades.length;
+  const thead=document.querySelector("#histTable thead");
+  thead.innerHTML="<tr>"+HCOLS.map(c=>`<th data-k="${c.k}" class="${c.k===key?'sorted '+(asc?'asc':''):''}">${c.l}</th>`).join("")+"</tr>";
+  thead.querySelectorAll("th").forEach(th=>th.onclick=()=>{const k=th.getAttribute("data-k");if(histState.sort.key===k)histState.sort.asc=!histState.sort.asc;else histState.sort={key:k,asc:false};drawHistTable();});
+  const tb=document.querySelector("#histTable tbody");
+  tb.innerHTML=rows.map(r=>{
+    const opened=histState.open[r.id];
+    const main=`<tr data-id="${r.id}">${HCOLS.map(c=>`<td class="${c.num?'mono':''}">${c.f?c.f(r):(r[c.k]??'—')}</td>`).join("")}</tr>`;
+    return main+(opened?histDetail(r):"");
+  }).join("")||'<tr><td class="muted" colspan="10">aucun trade ne correspond aux filtres</td></tr>';
+  tb.querySelectorAll("tr[data-id]").forEach(tr=>tr.onclick=()=>{const id=tr.getAttribute("data-id");histState.open[id]=!histState.open[id];drawHistTable();});
+}
+function histDetail(r){
+  const kv=(k,v)=>`<div><b>${k}</b> ${v==null||v===""?'—':v}</div>`;
+  const tl=(r.timeline||[]).map(s=>`<div>${JSON.stringify(s)}</div>`).join("")||'<div>aucun snapshot</div>';
+  return `<tr class="hist-detail"><td colspan="10">
+    <div class="kv">
+      ${kv("id",r.id)}${kv("track",r.track)}${kv("origin",r.origin)}${kv("partiel",r.is_partial?'oui':'non')}
+      ${kv("entrée",r.entry_actual)}${kv("sortie moy",r.avg_exit)}${kv("taille",r.size)}${kv("frais",r.fees!=null?sgn(r.fees,2):null)}
+      ${kv("realized",r.realized_pnl!=null?sgn(r.realized_pnl,2):null)}${kv("net",r.net_pnl!=null?sgn(r.net_pnl,2):null)}
+      ${kv("posé",fmtDate(r.ts_open))}${kv("rempli",fmtDate(r.ts_fill||r.ts_open))}${kv("clos",fmtDate(r.ts_close))}${kv("durée (dès fill)",fmtDur(r.duration_min))}
+    </div>
+    ${r.invalidation?`<div class="tl"><b>Invalidation :</b> ${r.invalidation}</div>`:""}
+    ${r.review?`<div class="tl"><b>Review :</b> ${typeof r.review==='string'?r.review:JSON.stringify(r.review)}</div>`:""}
+    <div class="tl"><b>Timeline (${(r.timeline||[]).length}) :</b>${tl}</div>
+  </td></tr>`;
+}
+
+// ─────────────── tabs + loop ───────────────
+const TABS=[["overview","Overview"],["agents","Agents"],["market","Marché"],["gex","GEX / Options"],["grid","Grille"],["edges","Edges"],["history","Historique"]];
+let active="overview";
+function renderActive(){ ({overview:renderOverview,agents:renderAgents,market:renderMarket,gex:renderGex,grid:renderGrid,edges:renderEdges,history:renderHistory}[active]||(()=>{}))(); setFresh(); }
+function buildTabs(){
+  document.getElementById("tabs").innerHTML=TABS.map(([k,l])=>`<button class="tab ${k===active?'active':''}" data-k="${k}">${l}</button>`).join("");
+  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
+    active=b.getAttribute("data-k");
+    document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x===b));
+    document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.getAttribute("data-view")===active));
+    renderActive();
+  });
+}
+async function get(u){ try{ return await (await fetch(u,{cache:"no-store"})).json(); }catch(e){ return null; } }
+async function fast(){
+  const [p,r,h,pos]=await Promise.all([get("/api/portfolio"),get("/api/routines"),get("/api/health"),get("/api/positions")]);
+  if(p){ state.portfolio=p; document.getElementById("gen").textContent="généré "+(p.generated||""); }
+  if(r) state.routines=r; if(h) state.health=h; if(pos) state.positions=pos;
+  renderActive();
+}
+async function slow(){
+  const [m,o,g,e,hi,rc]=await Promise.all([get("/api/market"),get("/api/options"),get("/api/grid"),get("/api/edges"),get("/api/history"),get("/api/reconcile")]);
+  if(m) state.market=m; if(o) state.options=o; if(g) state.grid=g; if(e) state.edges=e; if(hi) state.history=hi; if(rc) state.reconcile=rc;
+  renderActive();
+}
+buildTabs(); fast(); slow(); setInterval(fast,15000); setInterval(slow,60000);
+</script>
+</body>
+</html>

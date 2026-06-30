@@ -3,7 +3,7 @@
 // placement.js — disposition d'un bracket FADE ancrée sur la STRUCTURE LIVE.
 //
 // PUR, déterministe, testé offline. Cf. design docs/plans/2026-06-12-sweep-fade-design.md §8.
-// Objectif (the maintainer 12.06) : que la décision live se fasse PARFAITEMENT sur les
+// Objectif (Hugo 12.06) : que la décision live se fasse PARFAITEMENT sur les
 // indicateurs live. La routine lit les niveaux sur le Desktop (résistance-wick,
 // zones d'overshoot au-dessus, supports en-dessous) -> les passe ici -> sort les
 // rungs + SL + TP exacts. Plus de placement "à la louche".
@@ -29,6 +29,10 @@
 
 const FLOOR_ATR = { MR8: 2.5, S5: 2.0, MR4: 2.0, S1: 1.5, S2: 1.5, S3: 1.5, S12: 1.5 };
 
+// Familles MEAN-REVERSION : profil de sortie A2 (29.06, OOS valide MR8). Les edges de TENDANCE
+// (S1/S2/S12) gardent P0 (A2 = mirage chez eux). Routage TP par archetype.
+const MEANREV_RE = /^(MR8|MR4|S5|S3)/i;
+
 function floorAtr(setup) {
   const m = String(setup || "").toUpperCase().match(/^(MR8|MR4|S12|S5|S1|S2|S3)/);
   return m ? FLOOR_ATR[m[1]] : 1.0; // famille inconnue -> 1xATR (le plancher dur global)
@@ -45,8 +49,23 @@ function buildPlacement(input) {
   const {
     side, setup = "", entry_zone, atr, risk_usd,
     overshoot_zones = [], target_levels = [], swing = null,
-    n_rungs = 3, buffer_atr = 0.3, quick_frac = 0.35, main_frac = 0.40,
+    n_rungs = 3, buffer_atr = 0.3,
   } = input;
+  // TP 3-PALIERS (22.06, directive Hugo) : SECURISER TOT pour BANQUER de la MARGE (-> hedge). TP1 =
+  // petit partiel RAPIDE (10-25%, defaut 20%) TRES proche (defaut 0.2xATR) -> touche tres souvent
+  // (~85-93% des trades, cf. gambler's ruin vs SL floor) -> realise du cash/marge a chaque trade,
+  // neutralise le give-back (levier #1 du post-mortem 19.06). TP2 = le GROS morceau (defaut 50%,
+  // "plus consequent"). RUNNER = le reste (30%). Tunable : PLACE_TP1_FRAC / PLACE_TP2_FRAC / PLACE_TP1_ATR.
+  // PROFIL A2 (29.06, OOS valide MR8) : pour les mean-reversion, SUPPRIMER le micro-quick (0 edge,
+  // mange par les frais + fragmente Bybit + BE premature qui etouffe le runner) -> 2 paliers
+  // main 60 % + runner 40 %, BE apres le main (le monitor cale le BE sur take_profits[0] = le main).
+  // Routage par archetype : TENDANCE (S1/S2/S12) garde P0 (A2 = mirage chez eux). Reversible :
+  // AGENT_EXIT_A2=0 -> P0 partout (byte-identique). input.exit_a2 prime (tests). RÉEL INTERDIT.
+  const a2On = (input.exit_a2 != null ? !!input.exit_a2 : process.env.AGENT_EXIT_A2 !== "0")
+    && MEANREV_RE.test(String(setup || ""));
+  let quick_frac = isFinite(input.quick_frac) ? input.quick_frac : (parseFloat(process.env.PLACE_TP1_FRAC) || 0.20);
+  let main_frac = isFinite(input.main_frac) ? input.main_frac : (parseFloat(process.env.PLACE_TP2_FRAC) || 0.50);
+  if (a2On) { quick_frac = 0; main_frac = 0.60; } // 2 paliers : main 60 % + runner 40 %
   if (side !== "short" && side !== "long") throw new Error('side requis ("short"|"long")');
   if (!atr || !isFinite(atr) || atr <= 0) throw new Error("atr requis (>0)");
   if (!isFinite(entry_zone)) throw new Error("entry_zone requis");
@@ -80,15 +99,15 @@ function buildPlacement(input) {
   const slDistClosest = Math.abs(sl - topRung) / atr; // le rung le plus PROCHE du SL = le plus contraignant
   if (slDistClosest < floor - 0.02) warnings.push(`SL dist ${slDistClosest.toFixed(2)}xATR < floor ${floor} (${setup||"?"})`);
 
-  // ── 3) TP 3-PALIERS (19.06, approved — "capturer un 1er TP rapide aussi", parite scalp) :
+  // ── 3) TP 3-PALIERS (19.06, GO Hugo — "capturer un 1er TP rapide aussi", parite scalp) :
   //    QUICK (1er partiel RAPIDE = banque vite, reduit le give-back) + MAIN (avant le support bas,
   //    cible structurelle) + RUNNER (au-dela = extension). quick = front-run du niveau le plus proche,
-  //    borne pour rester RAPIDE (0.3..1.3xATR sinon partiel ATR ~0.7x). Le quick est sur CHAQUE rung ;
+  //    borne pour rester TRES PROCHE (0.2..0.9xATR sinon partiel ATR ~0.2x). Le quick est sur CHAQUE rung ;
   //    main sur chaque rung ; runner SUR LE RUNG PROFOND seulement (cap Bybit 10 stops respecte).
   const targets = target_levels
     .filter((t) => isFinite(t) && (isShort ? t < entry_zone : t > entry_zone))
     .sort((a, b) => (isShort ? b - a : a - b)); // du plus proche (haut, short) au plus loin (support bas)
-  const quickAtr = isFinite(input.quick_tp_atr) ? input.quick_tp_atr : 0.7;
+  const quickAtr = isFinite(input.quick_tp_atr) ? input.quick_tp_atr : (parseFloat(process.env.PLACE_TP1_ATR) || 0.2);
   const profOf = (p) => (isShort ? entry_zone - p : p - entry_zone); // profit (>0 dans le sens du trade)
   let tpQuick, tpMain, tpRunner;
   if (targets.length >= 1) {
@@ -97,12 +116,12 @@ function buildPlacement(input) {
     tpRunner = lowest + dn * 0.5 * atr;                         // AU-DELA du support (runner)
     if (targets.length >= 2) {                                  // 1er TP = front-run du niveau le plus proche
       let q = targets[0] - dn * 0.15 * atr; const qd = Math.abs(profOf(q)) / atr;
-      tpQuick = (qd > 1.3 || qd < 0.3) ? entry_zone + dn * quickAtr * atr : q; // trop loin/proche -> partiel ATR rapide
+      tpQuick = (qd > 0.9 || qd < 0.2) ? entry_zone + dn * quickAtr * atr : q; // hors [0.2..0.9]xATR -> partiel ATR a 0.2x (gain rapide = margin pour hedge)
     } else {
       tpQuick = entry_zone + dn * quickAtr * atr;               // 1 seul target -> partiel ATR rapide
     }
   } else {
-    warnings.push("aucun target_level -> TP en fallback geometrie ATR (quick 0.7x / main 2x / runner 3x)");
+    warnings.push("aucun target_level -> TP en fallback geometrie ATR (quick 0.2x / main 2x / runner 3x)");
     tpQuick = entry_zone + dn * quickAtr * atr;
     tpMain = entry_zone + dn * 2 * atr;
     tpRunner = entry_zone + dn * 3 * atr;
@@ -117,10 +136,17 @@ function buildPlacement(input) {
     const dist = Math.abs(sl - e);
     const size = dist > 0 ? perRisk / dist : 0;
     const isDeep = i === deepIdx;                               // le rung d'overshoot le plus profond porte le RUNNER
-    // CHAQUE rung = QUICK (1er partiel rapide) + MAIN ; le rung PROFOND ajoute le RUNNER (3 paliers).
-    const tps = isDeep
-      ? [ { px: px(tpQuick), frac: quick_frac }, { px: px(tpMain), frac: main_frac }, { px: px(tpRunner), frac: +(1 - quick_frac - main_frac).toFixed(2) } ]
-      : [ { px: px(tpQuick), frac: quick_frac }, { px: px(tpMain), frac: +(1 - quick_frac).toFixed(2) } ];
+    // CHAQUE rung = [QUICK si frac>0] + MAIN ; le rung PROFOND ajoute le RUNNER. Avec le profil A2
+    // (quick_frac=0) -> pas de palier quick : main 60 % + runner 40 % (deep) / main 100 % (non deep).
+    const tps = [];
+    if (quick_frac > 0) tps.push({ px: px(tpQuick), frac: quick_frac });
+    if (isDeep) {
+      tps.push({ px: px(tpMain), frac: +main_frac.toFixed(2) });
+      const runnerFrac = +(1 - quick_frac - main_frac).toFixed(2);
+      if (runnerFrac > 0) tps.push({ px: px(tpRunner), frac: runnerFrac });
+    } else {
+      tps.push({ px: px(tpMain), frac: +(1 - quick_frac).toFixed(2) });
+    }
     return {
       label: "R" + (i + 1), entry: px(e), size: +size.toFixed(6), risk_usd: +perRisk.toFixed(2),
       sl_dist_atr: +(dist / atr).toFixed(2), is_runner: isDeep, take_profits: tps,
@@ -132,6 +158,7 @@ function buildPlacement(input) {
 
   return {
     side, setup, atr: +atr, risk_usd_total: +risk_usd,
+    exit_profile: a2On ? "A2_2leg" : "P0_3leg",   // A2 (mean-rev) : 2 paliers, pas de micro-quick
     sl: px(sl), sl_floor_atr: floor, sl_dist_closest_atr: +slDistClosest.toFixed(2),
     rungs,
     tp_zones: { quick: px(tpQuick), main_before_support: px(tpMain), runner_beyond_support: px(tpRunner) },

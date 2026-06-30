@@ -47,6 +47,12 @@ run_test "TradingView Strategy" \
 run_test "Signal Executor (dry-run)" \
   "node '$SCRIPT_DIR/test-signal-executor.js'"
 
+run_test "Sync match closed-PnL (anti-contamination)" \
+  "node '$SCRIPT_DIR/test-sync-match.js'"
+
+run_test "Dashboard reconcile (recoupement Bybit)" \
+  "node '$SCRIPT_DIR/test-dashboard-reconcile.js'"
+
 run_test "Score /14 (offline)" \
   "node '$SCRIPT_DIR/test-score.js'"
 
@@ -62,6 +68,8 @@ run_test "Timeline par trade (offline)" \
 run_test "Digest / heartbeat (offline)" \
   "node '$SCRIPT_DIR/test-digest.js'"
 
+run_test "Obsidian sync (offline)" \
+  "node '$SCRIPT_DIR/test-obsidian-sync.js'"
 
 run_test "Trade-note Obsidian (offline)" \
   "node '$SCRIPT_DIR/test-trade-note.js'"
@@ -105,6 +113,18 @@ run_test "Confluence 0-100 engine (offline)" \
 run_test "Perception aggregator (offline)" \
   "node '$SCRIPT_DIR/test-perception.js'"
 
+run_test "Entry-radar candle confirmation by family (M002/S01, offline)" \
+  "node '$SCRIPT_DIR/test-confirm.js'"
+
+run_test "Armed-watch intentions store (M002/S02, offline)" \
+  "node '$SCRIPT_DIR/test-armed-watch.js'"
+
+run_test "Entry-radar plan + run shell (M002/S03, offline)" \
+  "node '$SCRIPT_DIR/test-entry-radar.js'"
+
+run_test "Signal-tick - alertes self-sourced 4h (scan.js -> tv-alerts, offline)" \
+  "node '$SCRIPT_DIR/test-signal-tick.js'"
+
 run_test "Origin conv/routine (offline)" \
   "node '$SCRIPT_DIR/test-origin.js'"
 
@@ -122,6 +142,12 @@ run_test "Manage-check / resserrement SL squeeze (offline)" \
 
 run_test "Risk-verify / risque geometrique reel (fix sizing DOGE, offline)" \
   "node '$SCRIPT_DIR/test-risk-verify.js'"
+
+run_test "Halt / breaker drawdown = argent reel only, kill-switch dur en demo (offline)" \
+  "node '$SCRIPT_DIR/test-halt.js'"
+
+run_test "Monitor-exec / execution risk-reducing du plan (cut/profit/continuation, offline)" \
+  "node '$SCRIPT_DIR/test-monitor-exec.js'"
 
 run_test "Price-action / mode histo court tradable en DEMO (offline)" \
   "node '$SCRIPT_DIR/test-price-action.js'"
@@ -189,6 +215,24 @@ run_test "Monitor persistant (offline)" \
 
 run_test "Portfolio live cross-agent (offline)" \
   "node '$SCRIPT_DIR/test-portfolio.js'"
+
+run_test "Dashboard API market/options/freshness (M003/S01, offline)" \
+  "node '$SCRIPT_DIR/test-dashboard-api.js'"
+
+run_test "Dashboard API grid/routines/edges (M003/S02, offline)" \
+  "node '$SCRIPT_DIR/test-dashboard-grid.js'"
+
+run_test "Dashboard API history (onglet Historique, offline)" \
+  "node '$SCRIPT_DIR/test-dashboard-history.js'"
+
+run_test "Bybit snapshot (verite dashboard, offline)" \
+  "node '$SCRIPT_DIR/test-bybit-snapshot.js'"
+
+run_test "tv-listener (webhook auth+schema+idempotence, offline)" \
+  "node '$SCRIPT_DIR/test-tv-listener.js'"
+
+run_test "tv-invalidation (exits event-driven, offline)" \
+  "node '$SCRIPT_DIR/test-tv-invalidation.js'"
 
 # ---- Summary -----------------------------------------------------------------
 

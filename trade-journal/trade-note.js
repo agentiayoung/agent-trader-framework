@@ -6,7 +6,7 @@
 //   Projette UNE entrée de trades.jsonl en note markdown datée :
 //   frontmatter riche (dates/perf/setup → vues Bases), thèse, invalidation,
 //   niveaux, timeline (la « story » routine par routine), review, et un
-//   bloc NOTES-MANUELLES préservé entre régénérations (annotations the maintainer).
+//   bloc NOTES-MANUELLES préservé entre régénérations (annotations Hugo).
 //
 // Exclusions (null) : MANUAL_TEST_* (tests pipeline, hors perf — même règle
 // que stats/score-eval/obsidian-sync), no_trade SANS hypo (logs de scan non

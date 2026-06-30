@@ -9,6 +9,7 @@
 const {
   baseSym, isLadder, ladderEnvelope, inEnvelope,
   findLadderParent, aggregateGroups, foldGroupIntoClosedParent, claimLadderFills,
+  claimScaleOutFills, foldOrphansIntoParents,
 } = require("../trade-journal/reconcile-match.js");
 
 let passed = 0, failed = 0;
@@ -108,6 +109,57 @@ ok("claim SUI -> 1 groupe partiel + position ouverte", claimS.groupIdx.length ==
 // position hors enveloppe -> pas reclamee
 const posFar = [{ symbol: "SUI/USDT:USDT", side: "short", entryPrice: 0.90, contracts: 15320 }];
 ok("claim SUI position hors env -> posIdx -1", claimLadderFills(sui, [], posFar, new Set(), new Set()).posIdx === -1);
+
+// ── claimScaleOutFills : scale-out NON-laddered (fix fragmentation 29.06) ──────────────
+const linkTrade = { entry_mode: "single", symbol: "LINK", side: "short", entry_actual: 7.99, ts_open: "2026-06-20T10:49:00Z" };
+const glLink = [
+  { symbol: "LINK", side: "short", entry: 7.99, avgExit: 7.91, qty: 1091.1, pnl: 77.30, fees: 6.49, lastTs: new Date("2026-06-20T20:40:00Z").getTime() },
+  { symbol: "LINK", side: "short", entry: 7.995, avgExit: 7.99, qty: 1048.5, pnl: -6.69, fees: 6.28, lastTs: new Date("2026-06-20T22:28:00Z").getTime() }, // 0.06% -> meme trade
+  { symbol: "LINK", side: "short", entry: 8.10, avgExit: 8.0, qty: 100, pnl: -10, fees: 0.5, lastTs: new Date("2026-06-20T23:00:00Z").getTime() }, // 1.4% -> autre trade
+];
+const cl = claimScaleOutFills(linkTrade, glLink, [], new Set(), new Set());
+ok("claimScaleOut LINK -> 2 partiels du meme trade (7.99 & 7.995)", cl.groupIdx.length === 2 && cl.groupIdx.includes(0) && cl.groupIdx.includes(1));
+ok("claimScaleOut LINK exclut 8.10 (>0.5%, autre trade)", !cl.groupIdx.includes(2));
+ok("claimScaleOut ignore les laddered", claimScaleOutFills({ entry_mode: "laddered", symbol: "LINK", side: "short", entry_actual: 7.99 }, glLink, [], new Set(), new Set()).groupIdx.length === 0);
+ok("claimScaleOut rejette mauvais side", claimScaleOutFills({ ...linkTrade, side: "long" }, glLink, [], new Set(), new Set()).groupIdx.length === 0);
+ok("claimScaleOut respecte usedG", claimScaleOutFills(linkTrade, glLink, [], new Set([0]), new Set()).groupIdx.length === 1);
+// anti-collision : un short SUI 0.7056 ne reclame PAS les fills d'un short SUI 0.6995 (0.87% > 0.5%)
+const glSuiShort = [{ symbol: "SUI", side: "short", entry: 0.6995, avgExit: 0.71, qty: 1165, pnl: -12.3, fees: 0.6, lastTs: new Date("2026-06-27T08:30:00Z").getTime() }];
+ok("claimScaleOut anti-collision SUI 0.7056 vs 0.6995", claimScaleOutFills({ entry_mode: "single", symbol: "SUI", side: "short", entry_actual: 0.7056, ts_open: "2026-06-28T00:00:00Z" }, glSuiShort, [], new Set(), new Set()).groupIdx.length === 0);
+// position encore ouverte + 1 partiel -> reclame groupe + posIdx
+const glSuiL = [{ symbol: "SUI", side: "long", entry: 0.68, avgExit: 0.69, qty: 580, pnl: 1.73, fees: 0.30, lastTs: new Date("2026-06-28T07:58:00Z").getTime() }];
+const posSuiL = [{ symbol: "SUI/USDT:USDT", side: "long", entryPrice: 0.681, contracts: 870 }];
+const clO = claimScaleOutFills({ entry_mode: "single", symbol: "SUI", side: "long", entry_actual: 0.682, ts_open: "2026-06-28T06:00:00Z" }, glSuiL, posSuiL, new Set(), new Set());
+ok("claimScaleOut SUI long open -> groupe + position", clO.groupIdx.length === 1 && clO.posIdx === 0);
+
+// ── foldOrphansIntoParents : repare la fragmentation historique ───────────────────────
+const linkParent = { id: "s2-link", strategy: "S2_short_continuation", status: "closed", symbol: "LINK", side: "short", entry_actual: 7.99, size: 1048.5, realized_pnl: -6.6864, fees: 6.2831, net_pnl: -12.97, ts_open: "2026-06-20T10:49:00Z", ts_close: "2026-06-20T22:28:00Z" };
+const linkOrphan = { id: "bybit-link-8-364298", strategy: "reconcile_orphan", status: "closed", symbol: "LINK", side: "short", entry_actual: 7.99, size: 1091.1, realized_pnl: 77.2963, fees: 6.4921, net_pnl: 70.80, avg_exit: 7.91, ts_close: "2026-06-20T20:40:00Z" };
+const fLink = foldOrphansIntoParents([linkParent, linkOrphan]);
+ok("fold LINK -> 1 merge", fLink.merges.length === 1 && fLink.merges[0].parent === "s2-link");
+ok("fold LINK -> orphelin retire", fLink.trades.length === 1 && fLink.trades[0].id === "s2-link");
+ok("fold LINK -> net combine ~ +57.83", near(fLink.trades[0].net_pnl, 57.8347, 1e-2));
+ok("fold LINK -> outcome win", fLink.trades[0].outcome === "win");
+
+const suiParent = { id: "perc-sui", strategy: "perception_long", status: "closed", symbol: "SUI", side: "long", entry_actual: 0.682, size: 1450, realized_pnl: 4.4846, fees: 0.7445, net_pnl: 3.74, ts_open: "2026-06-28T06:00:00Z", ts_close: "2026-06-28T10:04:00Z" };
+const suiOrphan = { id: "bybit-sui-1-517218", strategy: "reconcile_orphan", status: "closed", symbol: "SUI", side: "long", entry_actual: 0.68, size: 580, realized_pnl: 1.7322, fees: 0.2978, net_pnl: 1.43, avg_exit: 0.69, ts_close: "2026-06-28T07:58:00Z" };
+const fSui = foldOrphansIntoParents([suiParent, suiOrphan]);
+ok("fold SUI long -> net combine ~ +5.17", fSui.merges.length === 1 && near(fSui.trades[0].net_pnl, 5.1745, 1e-2));
+
+// idempotence : un 2e passage ne replie plus rien
+ok("fold idempotent (2e passage = 0 merge)", foldOrphansIntoParents(fLink.trades).merges.length === 0);
+
+// AMBIGUITE : 2 parents candidats dans la tolerance -> on NE replie PAS
+const p1 = { ...linkParent, id: "p1" }, p2 = { ...linkParent, id: "p2" };
+ok("fold ambigu (2 parents) -> 0 merge (conservateur)", foldOrphansIntoParents([p1, p2, linkOrphan]).merges.length === 0);
+
+// anti-collision temporelle : orphelin tres anterieur a la vie du parent -> pas de fold
+const oldOrphan = { ...linkOrphan, id: "old-orph", ts_close: "2026-05-01T00:00:00Z" };
+ok("fold rejette orphelin hors fenetre temps", foldOrphansIntoParents([linkParent, oldOrphan]).merges.length === 0);
+
+// anti-collision prix : orphelin a entree trop differente -> pas de fold
+const farOrphan = { ...linkOrphan, id: "far-orph", entry_actual: 8.5 };
+ok("fold rejette orphelin a entree trop loin (>0.5%)", foldOrphansIntoParents([linkParent, farOrphan]).merges.length === 0);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

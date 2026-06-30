@@ -47,6 +47,7 @@ function classifyStops(stops, ctx) {
 //  intended = { side, size, stop_loss, take_profits:[{px,frac}|px] }
 //  actual   = { position:{size,side}|null, slOrders:[{amount}], tpOrders:[{amount}] }
 function verifyBracket(intended, actual) {
+  intended = intended || {}; // defensif : un intended absent ne doit pas throw (cf. guard verify-bracket 21.06)
   const issues = [];
   const add = (level, msg) => issues.push({ level, msg });
   const pos = actual && actual.position;
@@ -112,14 +113,25 @@ function findOrphanOrders(orders, positionSymbols, activeSymbols) {
   const base = (s) => String(s || "").toUpperCase().replace(/USDT.*$/, "").replace(/[^A-Z0-9]/g, "");
   const posSet = new Set((positionSymbols || []).map(base));
   const actSet = new Set((activeSymbols || []).map(base));
+  // Un ordre d'ENTREE = NON reduce-only. Par symbole : existe-t-il une entree VIVANTE sur Bybit ?
+  const isReduce = (o) => !!(o && (o.reduceOnly === true || (o.info && (o.info.reduceOnly === true || o.info.reduceOnly === "true"))));
+  const hasEntry = {};
+  for (const o of orders || []) { const s = base(o.symbol); if (!s) continue; if (!isReduce(o)) hasEntry[s] = true; }
   const counts = {};
-  for (const o of orders || []) { const s = base(o.symbol); if (s) counts[s] = (counts[s] || 0) + 1; }
-  return Object.entries(counts)
-    .filter(([sym]) => !posSet.has(sym) && !actSet.has(sym))
-    .map(([symbol, count]) => ({ symbol, count }));
+  for (const o of orders || []) {
+    const s = base(o.symbol); if (!s) continue;
+    if (posSet.has(s)) continue;                          // position vivante -> on ne touche pas
+    // ORPHELIN VRAI (fix 27.06, parite scalp) : un ordre reduce-only sur un symbole SANS position ET
+    // SANS ordre d'entree vivant ne protege RIEN -> orphelin MEME si un pending stale subsiste au journal
+    // (son entree a disparu de Bybit : entry rejete postOnly ou annule sans nettoyer le bracket).
+    const orphanReduce = isReduce(o) && !hasEntry[s];
+    if (actSet.has(s) && !orphanReduce) continue;         // pending legitime (entree vivante) -> exclu
+    counts[s] = (counts[s] || 0) + 1;
+  }
+  return Object.entries(counts).map(([symbol, count]) => ({ symbol, count }));
 }
 
-// ── checkSlPlacement : SL anti-sweep (10.06, finding the maintainer) ──────────────────
+// ── checkSlPlacement : SL anti-sweep (10.06, finding Hugo) ──────────────────
 // Un SL pile sur/dans le niveau évident (swing low pour un long, swing high pour
 // un short) = POCHE DE LIQUIDITÉ : le marché balaie ces stops avant de s'inverser
 // (cas HYPE : SL 55.50 posé 4.5 ct AU-DESSUS du low 55.455 ; ~150 sweeps de swing
@@ -179,7 +191,7 @@ function checkSlGeometry({ entry, stop_loss, atr, min_dist_atr = 1 }) {
   };
 }
 
-// ── validatedSlFloor : floor de géométrie PAR FAMILLE de setup (approved 10.06, option A) ──
+// ── validatedSlFloor : floor de géométrie PAR FAMILLE de setup (GO Hugo 10.06, option A) ──
 // L'exemption R:R≥2 des mean-reversion est CONDITIONNELLE à leur géométrie ATR validée OOS
 // (configs optimales optimize.js : MR8 SL 2.5×ATR · S5/MR4 SL 2×ATR · S1 SL 1.5×ATR baseline).
 // Tolérance ×0.85 (l'ATR live dérive entre le calcul du bracket et le check). Famille inconnue

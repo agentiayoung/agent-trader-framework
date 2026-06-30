@@ -6,7 +6,7 @@
 // "tighten", short-only) en un verdict BIDIRECTIONNEL hold|weakening|flipped,
 // consomme a CHAQUE routine APRES le scan.
 //
-// Raison d'etre (question the maintainer 15.06 + relief-rally 12-15.06) : un short tenu dont
+// Raison d'etre (question Hugo 15.06 + relief-rally 12-15.06) : un short tenu dont
 // la donnee live a FLIPPE (ex. XRP qui casse : trend 4H repasse bull + le MEILLEUR
 // setup du scan passe LONG + reclaim EMA50 daily) etait SUBI jusqu'au SL (-1R x5)
 // faute d'un signal de PREMIERE CLASSE "these cassee -> sortir". Aujourd'hui le LLM
@@ -116,12 +116,12 @@ const WIN_MIN = process.env.THESIS_WIN_MIN ? +process.env.THESIS_WIN_MIN : 0.3;
 const GIVEBACK_HI = process.env.THESIS_GIVEBACK_HI ? +process.env.THESIS_GIVEBACK_HI : 0.4;
 const MAE_DEEP = process.env.THESIS_MAE_DEEP ? +process.env.THESIS_MAE_DEEP : -0.7;
 
-// ── CHANTIER B (15.06, approved) : MONITORING TREND-ADAPTATIF ──
+// ── CHANTIER B (15.06, GO Hugo) : MONITORING TREND-ADAPTATIF ──
 // Les setups de TENDANCE (S1/S2/S3/S12) ont une these directionnelle qui peut S'ETENDRE -> sur un
 // GAGNANT, laisser COURIR (desserrer le trail si la tendance se renforce, viser +3R/+5R). Les
 // MEAN-REVERSION (MR8/MR4) ont une cible BORNEE (retour a la moyenne) -> garder le TP FIXE valide
 // OOS (les laisser courir n'a pas de sens, ils REVIENNENT). S5 = range-fade (MR) SAUF s'il est pris
-// en regime trending/strong (scope "Tous", approved) -> adaptatif dans ce cas seulement.
+// en regime trending/strong (scope "Tous", GO Hugo) -> adaptatif dans ce cas seulement.
 const TREND_SETUP = /^(S1|S2|S3|S12)(?![A-Za-z0-9])/i;
 function isTrendSetup(strategy, r) {
   const key = String(strategy || "");

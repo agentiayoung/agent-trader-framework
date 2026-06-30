@@ -12,7 +12,7 @@
 
 // Barème /14 partagé (source unique = score.js) -> la confluence parle la MEME langue que le /14
 // deja en place (tiers A+/B/sub). Le "plancher 75/100" est REMPLACE par le plancher /14 (B=6) qui
-// pilote deja le sizing du systeme. Coherence totale du scoring (L7+L2, directive the maintainer 18.06).
+// pilote deja le sizing du systeme. Coherence totale du scoring (L7+L2, directive Hugo 18.06).
 const { tier14, TIER_FLOORS } = require("./score.js");
 
 const W = { structure: 20, zone: 20, candle: 25, orderflow: 20, liquidity: 15 };
